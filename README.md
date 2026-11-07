@@ -56,6 +56,27 @@ cmake --build windows/build --config Release --target niuma-merit
 
 产物为 `windows/build/Release/niuma-merit.exe`，包含客户端和自安装入口。两端自行构建的产物使用本机开发签名或未签名，正式安装包以官网下载为准。
 
+## Windows 安装器（可选）
+
+正式安装包由官方签名发布；下面说明如何用仓库内的 Inno Setup 脚本自行构建一个未签名安装器，仅用于本机测试。需要 [Inno Setup 6](https://jrsoftware.org/isinfo.php)。
+
+```powershell
+# 先按上一节构建得到客户端
+cmake -S windows -B windows/build -G "Visual Studio 17 2022" -A x64
+cmake --build windows/build --config Release --target niuma-merit
+# 安装器脚本按 ..\..\dist\ 取产物
+New-Item -ItemType Directory -Force dist | Out-Null
+Copy-Item windows/build/Release/niuma-merit.exe dist/niuma-merit.exe
+# 用仓库版本号编译安装器（iscc 或 ISCC.exe）
+iscc /DMyAppVersion=$(Get-Content windows/VERSION) windows/installer/niuma-merit.iss
+```
+
+产物为 `dist/niuma-merit-windows-<版本>-setup.exe`，未签名。安装器默认安装到当前用户目录、无需管理员权限，并提供登录后自启与文件关联选项。
+
+## 持续集成
+
+`.github/workflows/build.yml` 在推送和 PR 时构建 macOS 与 Windows 客户端并上传产物，同时校验 `macos/src` 与 `windows/src` 下的共享头文件（`reminder_catalog_update.h`、`reminder_policy.h`）逐字节一致，避免两端逻辑漂移。
+
 ## 许可证
 
 项目采用 [GNU GPL v3](LICENSE)。Windows 客户端所用的 [miniz](windows/third_party/miniz/LICENSE) 按其 MIT 许可证分发。

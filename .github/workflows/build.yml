@@ -1,0 +1,65 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (ad-hoc signed)
+        working-directory: macos
+        env:
+          NIUMA_CODESIGN_IDENTITY: "-"
+          NIUMA_ALLOW_ADHOC_SIGNING: "1"
+        run: ./scripts/build-macos.sh
+      - name: Record checksums
+        run: shasum -a 256 macos/dist/*.zip | tee macos-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          include-hidden-files: false
+          name: niuma-merit-macos
+          path: |
+            macos/dist/*.zip
+            macos-sha256.txt
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S windows -B windows/build -G "Visual Studio 17 2022" -A x64
+      - name: Build
+        run: cmake --build windows/build --config Release --target niuma-merit
+      - name: Record checksum
+        shell: pwsh
+        run: (Get-FileHash windows/build/Release/niuma-merit.exe -Algorithm SHA256).Hash | Tee-Object windows-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          include-hidden-files: false
+          name: niuma-merit-windows
+          path: |
+            windows/build/Release/niuma-merit.exe
+            windows-sha256.txt
+
+  shared-headers:
+    # 公开仓库里 macos/src 与 windows/src 各有一份共享头文件，必须逐字节一致。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shared headers must be identical
+        run: |
+          set -eu
+          status=0
+          for f in reminder_catalog_update.h reminder_policy.h; do
+            if ! diff -q "macos/src/$f" "windows/src/$f"; then
+              echo "::error file=windows/src/$f::$f 与 macos/src 不一致"
+              status=1
+            fi
+          done
+          [ "$status" -eq 0 ] && echo "shared headers identical"
+          exit "$status"
