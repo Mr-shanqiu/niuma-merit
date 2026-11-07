@@ -20,7 +20,7 @@ cd niuma-merit
 需要 Xcode 命令行工具（包含 Clang 和 macOS SDK）及 Python 3.9 或更新版本。以下命令生成供本机测试的通用客户端和安装应用：
 
 ```sh
-NIUMA_CODESIGN_IDENTITY=- ./macos/scripts/build-macos.sh
+(cd macos && NIUMA_CODESIGN_IDENTITY=- ./scripts/build-macos.sh)
 ./macos/scripts/build-macos-installer.sh \
   "$PWD/macos/dist/牛马电子功德.app" "$PWD/macos/dist/installer"
 ```
