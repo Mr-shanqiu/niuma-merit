@@ -60,9 +60,6 @@ foreach(target IN ITEMS niuma-input-core niuma-runtime-core niuma-alpha-region
     niuma-windows-scenes niuma-windows-appearance-loader niuma-merit)
   target_compile_features(${target} PUBLIC cxx_std_17)
   target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-endforeach()
-foreach(target IN ITEMS niuma-input-core niuma-runtime-core niuma-alpha-region
-    niuma-windows-composition niuma-windows-scenes niuma-merit)
   target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
   set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endforeach()
