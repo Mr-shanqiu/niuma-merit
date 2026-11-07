@@ -1,0 +1,255 @@
+#include "composition_presenter.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <limits>
+
+namespace niuma::runtime {
+namespace {
+using Clock = std::chrono::steady_clock;
+double Milliseconds(Clock::time_point start) {
+  return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+bool Equal(const Quad& a, const Quad& b) {
+  if (a.textureId != b.textureId || a.opacity != b.opacity ||
+      a.scissor.has_value() != b.scissor.has_value()) return false;
+  if (a.scissor && (a.scissor->x != b.scissor->x || a.scissor->y != b.scissor->y ||
+      a.scissor->width != b.scissor->width || a.scissor->height != b.scissor->height)) return false;
+  for (std::size_t i = 0; i < a.positions.size(); ++i)
+    if (a.positions[i].x != b.positions[i].x || a.positions[i].y != b.positions[i].y ||
+        a.uv[i].x != b.uv[i].x || a.uv[i].y != b.uv[i].y) return false;
+  return true;
+}
+}
+
+bool CompositionPresenter::Fail(HRESULT error, const std::string& detail) {
+  error_ = error; detail_ = detail; return false;
+}
+void CompositionPresenter::ForgetInstalledRegion() noexcept {
+  installedRaster_ = AlphaRegionResult{};
+  stats_.retainedRegionBytes = 0;
+}
+void CompositionPresenter::Invalidate() noexcept {
+  frameValid_ = false;
+  ForgetInstalledRegion();
+  nativeBands_.Clear();
+  stats_.retainedBandBytes=stats_.retainedBandHandles=0;
+}
+bool CompositionPresenter::BackendFailure() {
+  Invalidate();
+  return Fail(renderer_.LastError(), renderer_.LastErrorMessage());
+}
+bool CompositionPresenter::Initialize(HWND window, int width, int height, bool software, bool layered) {
+  Shutdown();
+  if (!renderer_.Initialize(window, width, height, software, layered)) return BackendFailure();
+  window_ = window; width_ = width; height_ = height;
+  error_ = S_OK; detail_.clear();
+  return true;
+}
+bool CompositionPresenter::Resize(int width, int height) {
+  if (!window_) return Fail(E_UNEXPECTED, "Composition window is not initialized");
+  if (width == width_ && height == height_) return true;
+  if (!renderer_.Resize(width, height)) return BackendFailure();
+  width_ = width; height_ = height; Invalidate();
+  return true;
+}
+void CompositionPresenter::UpdateSpareStats() noexcept {
+  stats_.spareTextureCount=spares_.size();stats_.spareTextureBytes=0;
+  for(const auto& texture:spares_)stats_.spareTextureBytes+=texture.bytes;
+}
+void CompositionPresenter::DropSpare(std::size_t index) {
+  renderer_.RemoveTexture(spares_[index].id);
+  spares_.erase(spares_.begin()+index);UpdateSpareStats();
+}
+bool CompositionPresenter::SetTextures(const std::vector<CompositionTexture>& textures) {
+  if (!window_) return Fail(E_UNEXPECTED, "Composition window is not initialized");
+  if (textures.empty() || textures.size() > kMaximumTextures)
+    return Fail(E_INVALIDARG, "Invalid composition texture count");
+  std::uint64_t nextBytes = 0;
+  for (std::size_t i = 0; i < textures.size(); ++i) {
+    const auto& t = textures[i];
+    if (!t.key || !t.version || !t.pixels || !t.pixels->width || !t.pixels->height ||
+        t.pixels->width > 16384 || t.pixels->height > 16384)
+      return Fail(E_INVALIDARG, "Texture identity or pixels are missing");
+    const auto bytes = std::uint64_t(t.pixels->width) * t.pixels->height * 4;
+    if (bytes > kResidentTextureLimit || nextBytes > kResidentTextureLimit - bytes)
+      return Fail(E_OUTOFMEMORY, "Composition texture budget exceeded");
+    nextBytes += bytes;
+    for (std::size_t j = 0; j < i; ++j)
+      if (textures[j].key == t.key) return Fail(E_INVALIDARG, "Duplicate composition texture key");
+    // Do not trust a matching version to hide malformed source bytes.
+    if (t.pixels->width > std::numeric_limits<std::uint32_t>::max() / 4 ||
+        t.pixels->strideBytes < t.pixels->width * 4 ||
+        std::uint64_t(t.pixels->strideBytes) * t.pixels->height > t.pixels->bgraPremultiplied.size())
+      return Fail(E_INVALIDARG, "Incomplete composition texture pixels");
+  }
+  std::vector<Uploaded> next;
+  // Prepared ids are either new resources or claimed inactive buffers. Neither
+  // belongs to the active set, so a later failure may discard all of them.
+  std::vector<std::uint32_t> prepared;
+  next.reserve(textures.size()); prepared.reserve(textures.size());
+  spares_.reserve(kSpareTextureCountLimit);
+  for(std::size_t i=0;i<spares_.size();) {
+    const auto& spare=spares_[i];
+    const bool wanted=std::any_of(textures.begin(),textures.end(),[&](const auto& t) {
+      return t.reusable && t.key==spare.key && t.pixels->width==spare.width && t.pixels->height==spare.height;
+    });
+    if(wanted)++i;else DropSpare(i);
+  }
+  const auto discardPrepared=[&] {
+    for(auto id:prepared)renderer_.RemoveTexture(id);
+    UpdateSpareStats();
+  };
+  const auto backendFailure=[&] {
+    // Cleanup methods have their own success/error state. Preserve the write
+    // error before removing prepared resources rather than reporting S_OK.
+    const auto error=renderer_.LastError();const auto detail=renderer_.LastErrorMessage();
+    discardPrepared();Invalidate();return Fail(error,detail);
+  };
+  for (const auto& t : textures) {
+    auto found = std::find_if(uploaded_.begin(), uploaded_.end(), [&](const Uploaded& u) {
+      return u.key == t.key && u.version == t.version &&
+          u.width == t.pixels->width && u.height == t.pixels->height && u.reusable==t.reusable;
+    });
+    if (found != uploaded_.end()) { next.push_back(*found); continue; }
+    const auto bytes = std::uint64_t(t.pixels->width) * t.pixels->height * 4;
+    std::uint32_t id=0;
+    auto spare=std::find_if(spares_.begin(),spares_.end(),[&](const auto& u) {
+      return t.reusable && u.key==t.key && u.width==t.pixels->width && u.height==t.pixels->height;
+    });
+    if(spare!=spares_.end()) {
+      id=spare->id;spares_.erase(spare);UpdateSpareStats();
+      prepared.push_back(id);
+      if(!renderer_.UpdateTexture(id,*t.pixels))return backendFailure();
+    } else {
+      const auto fits=[&] {
+        const auto resident=renderer_.Stats().textureBytes;
+        return resident<=kReplacementTextureLimit && bytes<=kReplacementTextureLimit-resident;
+      };
+      // Idle buffers must never cause an otherwise valid replacement to fail.
+      // Active textures remain untouched until every replacement is ready.
+      while(!fits() && !spares_.empty())DropSpare(spares_.size()-1);
+      if(!fits()) {
+        discardPrepared();return Fail(E_OUTOFMEMORY,"Composition replacement peak exceeded");
+      }
+      id=renderer_.AddTexture(*t.pixels,t.reusable);
+      if(!id)return backendFailure();
+      prepared.push_back(id);
+    }
+    next.push_back({t.key,t.version,bytes,id,t.pixels->width,t.pixels->height,t.reusable});
+    ++stats_.textureUploads;
+    stats_.peakTextureBytes=std::max(stats_.peakTextureBytes,renderer_.Stats().textureBytes);
+  }
+  bool changed = !prepared.empty() || next.size() != uploaded_.size();
+  for (const auto& old : uploaded_) {
+    if (std::none_of(next.begin(), next.end(), [&](const Uploaded& n) { return n.id == old.id; })) {
+      const bool sameShape=std::any_of(next.begin(),next.end(),[&](const auto& n) {
+        return n.key==old.key && n.reusable && n.width==old.width && n.height==old.height;
+      });
+      if(old.reusable && sameShape && spares_.size()<kSpareTextureCountLimit &&
+          old.bytes<=kSpareTextureByteLimit-stats_.spareTextureBytes) {
+        spares_.push_back(old);UpdateSpareStats();
+      } else renderer_.RemoveTexture(old.id);
+      changed = true;
+    }
+  }
+  uploaded_ = std::move(next);
+  stats_.residentTextureBytes = nextBytes;
+  if (changed) frameValid_ = false;
+  error_ = S_OK; detail_.clear();
+  return true;
+}
+bool CompositionPresenter::DrawLatest(const std::vector<CompositionQuad>& source, PixelImage* diagnosticCapture) {
+  if (!window_) return Fail(E_UNEXPECTED, "Composition window is not initialized");
+  if (source.empty() || source.size() > kMaximumQuads)
+    return Fail(E_INVALIDARG, "Invalid composition quad count");
+  std::vector<Quad> quads;
+  std::vector<PreparedAlphaQuad> masks;
+  quads.reserve(source.size()); masks.reserve(source.size());
+  for (const auto& q : source) {
+    const auto found = std::find_if(uploaded_.begin(), uploaded_.end(),
+        [&](const Uploaded& t) { return t.key == q.textureKey; });
+    if (found == uploaded_.end() || !q.mask || !q.mask->success ||
+        q.mask->width != found->width || q.mask->height != found->height)
+      return Fail(E_INVALIDARG, "Composition quad has no matching prepared resource");
+    auto quad = q.geometry; quad.textureId = found->id;
+    quads.push_back(quad);
+    masks.push_back(FromRendererPreparedQuad(quad, *q.mask));
+  }
+  if (!diagnosticCapture && frameValid_ && previous_.size() == quads.size() &&
+      std::equal(previous_.begin(), previous_.end(), quads.begin(), Equal)) {
+    ++stats_.unchangedFrames;
+    error_ = S_OK; detail_.clear();
+    return true;
+  }
+  if (renderer_.layered()) {
+    // UpdateLayeredWindow uses this very frame's alpha for desktop hit testing.
+    // No parallel native alpha-region reconstruction or GPU readback is needed.
+    const auto submitStart = Clock::now();
+    if (!renderer_.Draw(quads,false)) return BackendFailure();
+    stats_.lastDrawSubmitWallMs = Milliseconds(submitStart);
+    if (diagnosticCapture && !renderer_.Capture(*diagnosticCapture)) return BackendFailure();
+    const auto presentStart = Clock::now();
+    if (!renderer_.Present()) return BackendFailure();
+    stats_.lastPresentWallMs = Milliseconds(presentStart);
+    stats_.lastSubmitMs = Milliseconds(submitStart);
+    previous_ = std::move(quads); frameValid_ = true; ++stats_.framesPresented;
+    error_ = S_OK; detail_.clear(); return true;
+  }
+  const auto regionStart = Clock::now();
+  auto region = BuildPreparedAlphaRegion(width_, height_, masks, &installedRaster_, &nativeBands_);
+  if (!region.success) return Fail(E_INVALIDARG, region.error);
+  stats_.lastRegionDetails = region.stats;
+  stats_.nativeBandsCreated+=region.stats.nativeBandsCreated;
+  stats_.nativeBandsReused+=region.stats.nativeBandsReused;
+  if(region.stats.nativeBandsFallback) ++stats_.nativeBandFallbacks;
+  stats_.retainedBandBytes=nativeBands_.RetainedBytes();
+  stats_.retainedBandHandles=nativeBands_.RetainedHandles();
+  // Region and GPU use the very same weak-edge decisions. USER owns the region
+  // only after a successful call; a failed submission remains visibly failed.
+  stats_.lastRegionInstallWallMs = 0;
+  if (region.stats.nativeRegionReused) {
+    ++stats_.nativeRegionReuses;
+  } else {
+    const auto installStarted = Clock::now();
+    if (!SetWindowRgn(window_, region.region, FALSE)) {
+      const DWORD error = GetLastError();
+      Invalidate();
+      return Fail(error ? HRESULT_FROM_WIN32(error) : E_FAIL, "Composition hit region could not be installed");
+    }
+    stats_.lastRegionInstallWallMs = Milliseconds(installStarted);
+    region.ReleaseRegion();
+    ++stats_.nativeRegionInstalls;
+    ForgetInstalledRegion();
+    // Bound actual allocation capacity, including empty/transparent coverage.
+    const auto bytes = region.raster.rectangles.capacity() * sizeof(AlphaRegionRect);
+    if (bytes <= kInstalledRegionByteLimit) {
+      installedRaster_ = std::move(region.raster);
+      stats_.retainedRegionBytes = bytes;
+    }
+  }
+  stats_.lastRegionMs = Milliseconds(regionStart);
+  const auto submitStart = Clock::now();
+  if (!renderer_.Draw(quads, false, &region.weakOverrides)) return BackendFailure();
+  stats_.lastDrawSubmitWallMs = Milliseconds(submitStart);
+  const auto readbackStart = Clock::now();
+  if (diagnosticCapture && !renderer_.Capture(*diagnosticCapture)) return BackendFailure();
+  stats_.lastReadbackWallMs = diagnosticCapture ? Milliseconds(readbackStart) : 0;
+  const auto presentStart = Clock::now();
+  if (!renderer_.Present()) return BackendFailure();
+  stats_.lastPresentWallMs = Milliseconds(presentStart);
+  stats_.lastSubmitMs = Milliseconds(submitStart);
+  previous_ = std::move(quads);
+  frameValid_ = true;
+  ++stats_.framesPresented;
+  error_ = S_OK; detail_.clear();
+  return true;
+}
+void CompositionPresenter::Shutdown() {
+  renderer_.Shutdown();
+  uploaded_.clear(); spares_.clear(); UpdateSpareStats(); previous_.clear(); Invalidate();
+  window_ = nullptr; width_ = height_ = 0;
+  stats_.residentTextureBytes = 0;
+}
+}  // namespace niuma::runtime
