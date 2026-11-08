@@ -303,7 +303,6 @@ static const NSTimeInterval kDefaultStrikeDuration = 0.220;
 static const NSTimeInterval kMinStrikeDuration = 0.120;
 static const NSTimeInterval kMaxStrikeDuration = 0.240;
 static const NSTimeInterval kPauseForResetGap = 0.600;
-static const NSTimeInterval kScrollGestureIdleGap = 0.180;
 static const NSTimeInterval kPermissionPollInterval = 1.0;
 static constexpr double kEmaWeight = 0.35;
 
@@ -361,6 +360,9 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   niuma::OffworkSnapshot _offworkSnapshot;
   niuma::client::core::VisibilityState _visibility;
   NMSynchronizedActivity _reminderActivity;
+  // F0 fallback path (CGEventTap -> receiveGlobalEvent) shares the mailbox's
+  // distance/gesture rules via this counter.
+  niuma::macos::ScrollTickCounter _scrollCounter;
   niuma::reminder::WallClockGuard _reminderClockGuard;
   bool _reminderStorageFault;
   std::unique_ptr<niuma::reminder::ReminderStore> _reminderStore;
@@ -418,7 +420,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, strong) NMInputMailbox *inputMailbox;
 @property(nonatomic, strong) dispatch_source_t inputNotification;
 - (void)prepareInputDelivery;
-- (void)captureInputType:(CGEventType)type;
+- (void)captureInputType:(CGEventType)type event:(CGEventRef)event;
 - (void)drainInput;
 
 @property(nonatomic) CFRunLoopSourceRef eventSource;
@@ -488,7 +490,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, strong) NSError *loginStartupError;
 - (BOOL)hasLiveEventTap;
 - (NSString *)countStatusTitle;
-- (void)receiveGlobalEvent:(CGEventType)type;
+- (void)receiveGlobalEvent:(CGEventType)type event:(CGEventRef)event;
 - (void)receiveReminderKeyUp;
 - (void)reminderWillPause:(NSNotification *)notification;
 - (void)reminderDidResume:(NSNotification *)notification;
@@ -506,7 +508,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)closeCountStatus:(id)sender;
 - (void)showFirstUseGuide:(id)sender;
 - (void)count;
-- (void)countScrollGesture;
+- (void)countScrollGesture:(CGEventRef)event;
 - (void)showContextMenu:(NSEvent *)event;
 - (NSMenu *)contextMenu;
 - (void)refreshAppearanceVisibility:(id)sender;
@@ -2096,7 +2098,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     dispatch_source_set_event_handler(self.inputNotification, ^{ [weakSelf drainInput]; });
     dispatch_resume(self.inputNotification);
 }
-- (void)captureInputType:(CGEventType)type {
+- (void)captureInputType:(CGEventType)type event:(CGEventRef)event {
   NMInputMailbox *mailbox=self.inputMailbox;
   if (!mailbox) return;
   if (type==kCGEventTapDisabledByTimeout || type==kCGEventTapDisabledByUserInput) {
@@ -2105,10 +2107,17 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     _reminderActivity.Observe(niuma::reminder::ActivitySampler::Event::KeyUp,ReminderContinuousTimeMs());
     return;
   } else {
-    auto event=type==kCGEventKeyDown ? niuma::reminder::ActivitySampler::Event::KeyDown :
+    auto activityEvent=type==kCGEventKeyDown ? niuma::reminder::ActivitySampler::Event::KeyDown :
       type==kCGEventScrollWheel ? niuma::reminder::ActivitySampler::Event::ScrollPulse : niuma::reminder::ActivitySampler::Event::Click;
-    _reminderActivity.Observe(event,ReminderContinuousTimeMs());
-    [mailbox record:type wall:std::time(nullptr) uptime:NSProcessInfo.processInfo.systemUptime];
+    _reminderActivity.Observe(activityEvent,ReminderContinuousTimeMs());
+    double scrollTicks=0; std::uint32_t phase=0, momentum=0;
+    if (type==kCGEventScrollWheel && event) {
+      scrollTicks=niuma::macos::ScrollTickDistance(event);
+      phase=(std::uint32_t)CGEventGetIntegerValueField(event,kCGScrollWheelEventScrollPhase);
+      momentum=(std::uint32_t)CGEventGetIntegerValueField(event,kCGScrollWheelEventMomentumPhase);
+    }
+    [mailbox record:type wall:std::time(nullptr) uptime:NSProcessInfo.processInfo.systemUptime
+        scrollTicks:scrollTicks phase:phase momentum:momentum];
   }
   dispatch_source_t notification=self.inputNotification;
   if(notification) dispatch_source_merge_data(notification,1);
@@ -2145,7 +2154,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   if(disabled) [self handleEventTapDisabled:disabled];
 }
 
-- (void)receiveGlobalEvent:(CGEventType)type {
+- (void)receiveGlobalEvent:(CGEventType)type event:(CGEventRef)event {
   const std::uint64_t reminderNowMs = ReminderContinuousTimeMs();
   if (type == kCGEventKeyDown)
     _reminderActivity.Observe(niuma::reminder::ActivitySampler::Event::KeyDown, reminderNowMs);
@@ -2167,7 +2176,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   }
   const long long before = self.total;
   self.selfCheckCountingEvent = observing;
-  if (type == kCGEventScrollWheel) [self countScrollGesture];
+  if (type == kCGEventScrollWheel) [self countScrollGesture:event];
   else [self count];
   self.selfCheckCountingEvent = NO;
   if (self.total > before) self.globalCountConfirmed = YES;
@@ -2500,8 +2509,8 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
       self.selfCheckResult = UiText(@"收到事件，但计数未完全更新。请重试监听；总数已达上限时也不会继续增加。",
                                    @"Events arrived but counts did not fully update. Retry the listener; counts also stop at the numeric limit.");
     } else if (!self.selfCheckExpected) {
-      self.selfCheckResult = UiText(@"只观察到同一段连续滚动，未开始新手势；停一下再试，不判失败。",
-                                   @"Only an existing scroll gesture was observed. Pause and retry; no failure inferred.");
+      self.selfCheckResult = UiText(@"只观察到不足一个滚动刻度的微小滚动；再多滚一点再试，不判失败。",
+                                   @"Only sub-tick scrolling was observed. Scroll a bit more and retry; no failure inferred.");
     } else {
       self.listenerNeedsCheck = NO;
       self.selfCheckResult = UiText(
@@ -2518,8 +2527,8 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
               ceil(MAX(0.0, self.selfCheckEnds - now))];
   }
   self.countStatusText.string = [NSString stringWithFormat:
-      UiText(@"%@\n\n点击“开始”后切到其他应用，做几次按键、鼠标点击或滚动，10 秒后回来查看。计数自检不按应用区分，请自行确认已切换。\n\n%@\n\n本次收到：按键 %lu 次 / 鼠标按键 %lu 次 / 滚动事件 %lu 次\n按现有规则应增加 %lu，实际增加 %lu。连续滚动按一次手势计数。\n最后事件：开始后 %.1f 秒（无事件时为 0）。\n\n监听句柄或权限开关本身不是成功证据。输入监控未授权、授权身份变化或安全输入都可能影响监听；不绕过系统限制。\n\n自检仅在内存中保留事件次数与相对时间；不记录具体键值、输入内容、坐标、应用或窗口信息。不联网。",
-             @"%@\n\nStart, switch to another app and type, click or scroll. Return after 10 seconds. The app does not inspect which app you used; please confirm the switch yourself.\n\n%@\n\nReceived: %lu key events / %lu mouse clicks / %lu scroll events\nExpected count increase: %lu; actual: %lu. Continuous scrolling counts as one gesture.\nLast event: %.1f seconds after start (0 if none).\n\nA handle or permission switch alone is not proof. Missing or changed Input Monitoring permission and secure input may affect listening. No system restrictions are bypassed.\n\nOnly event counts and relative times are kept in memory, never key values, contents, coordinates, apps or windows. No networking."),
+      UiText(@"%@\n\n点击“开始”后切到其他应用，做几次按键、鼠标点击或滚动，10 秒后回来查看。计数自检不按应用区分，请自行确认已切换。\n\n%@\n\n本次收到：按键 %lu 次 / 鼠标按键 %lu 次 / 滚动事件 %lu 次\n按现有规则应增加 %lu，实际增加 %lu。滚动按距离折算：累计每满一个刻度加 1，惯性计入同一手势。\n最后事件：开始后 %.1f 秒（无事件时为 0）。\n\n监听句柄或权限开关本身不是成功证据。输入监控未授权、授权身份变化或安全输入都可能影响监听；不绕过系统限制。\n\n自检仅在内存中保留事件次数与相对时间；不记录具体键值、输入内容、坐标、应用或窗口信息。不联网。",
+             @"%@\n\nStart, switch to another app and type, click or scroll. Return after 10 seconds. The app does not inspect which app you used; please confirm the switch yourself.\n\n%@\n\nReceived: %lu key events / %lu mouse clicks / %lu scroll events\nExpected count increase: %lu; actual: %lu. Scrolling counts by distance: one merit per accumulated tick; momentum stays in the same gesture.\nLast event: %.1f seconds after start (0 if none).\n\nA handle or permission switch alone is not proof. Missing or changed Input Monitoring permission and secure input may affect listening. No system restrictions are bypassed.\n\nOnly event counts and relative times are kept in memory, never key values, contents, coordinates, apps or windows. No networking."),
       self.countStatusTitle, progress, (unsigned long)self.selfCheckKeys,
       (unsigned long)self.selfCheckClicks, (unsigned long)self.selfCheckScrolls,
       (unsigned long)self.selfCheckExpected, (unsigned long)self.selfCheckCounted,
@@ -2714,12 +2723,16 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   if (self.calendarWindow.isVisible) [self.calendarView setNeedsDisplay:YES];
 }
 
-- (void)countScrollGesture {
-  NSTimeInterval now = CACurrentMediaTime();
-  BOOL beginsNewGesture = self.lastScrollEventTime <= 0 ||
-                          now - self.lastScrollEventTime > kScrollGestureIdleGap;
-  self.lastScrollEventTime = now;
-  if (beginsNewGesture) [self count];
+- (void)countScrollGesture:(CGEventRef)event {
+  // Fallback path: identical distance/gesture rules to the live input mailbox.
+  const double now = NSProcessInfo.processInfo.systemUptime;
+  const double distance = niuma::macos::ScrollTickDistance(event);
+  const std::uint32_t phase = event
+      ? (std::uint32_t)CGEventGetIntegerValueField(event, kCGScrollWheelEventScrollPhase) : 0;
+  const std::uint32_t momentum = event
+      ? (std::uint32_t)CGEventGetIntegerValueField(event, kCGScrollWheelEventMomentumPhase) : 0;
+  const int ticks = _scrollCounter.Consume(distance, phase, momentum, now);
+  for (int i = 0; i < ticks; ++i) [self count];
 }
 
 - (void)animate:(NSTimer *)timer {
@@ -3320,10 +3333,9 @@ static CGEventRef EventTapCallback(CGEventTapProxy proxy,
                                    CGEventRef event,
                                    void *context) {
   (void)proxy;
-  (void)event;
   if (gIsolatedAcceptance && !gAcceptancePhysicalInput) return event;
   MeritController *controller = (__bridge MeritController *)context;
-  @autoreleasepool { [controller captureInputType:type]; }
+  @autoreleasepool { [controller captureInputType:type event:event]; }
   return event;
 }
 

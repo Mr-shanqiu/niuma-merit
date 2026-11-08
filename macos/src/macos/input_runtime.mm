@@ -1,5 +1,94 @@
 #include <mutex>
 #include <ctime>
+#include <cmath>
+#include <cstdint>
+#include <algorithm>
+
+// F0: scroll counting is by distance, not by a per-gesture debounce. These
+// helpers are shared by the live input mailbox below and the CGEventTap
+// fallback in app.mm so both use identical thresholds and gesture rules.
+namespace niuma { namespace macos {
+
+struct ScrollTickCounter {
+  // One tick adds one merit. Continuous (trackpad / precision) deltas are in
+  // pixels; this is the calibrated pixels-per-notch. Line-based wheels report
+  // lines, where one line already equals one tick.
+  static constexpr double kPixelsPerTick = 10.0;
+  // Guard abnormal single events and a runaway single gesture. Both values
+  // are calibration constants for real hardware; momentum counts but stays
+  // inside the same gesture and is bounded by kMaxTicksPerGesture.
+  static constexpr double kMaxTicksPerEvent = 4.0;
+  static constexpr double kMaxTicksPerGesture = 30.0;
+  // Wheels that expose no scroll phase use an idle gap to start a new gesture.
+  static constexpr double kIdleGestureGap = 0.35;
+
+  double residue = 0.0;        // sub-tick carry across contiguous events
+  double gestureTicks = 0.0;   // whole ticks already counted this gesture
+  bool gestureActive = false;
+  double lastEventTime = 0.0;
+
+  void BeginGesture(double now) {
+    residue = 0.0;
+    gestureTicks = 0.0;
+    gestureActive = true;
+    lastEventTime = now;
+  }
+
+  // distanceTicks: absolute magnitude for this event in tick units. phase /
+  // momentum: raw kCGScrollPhase* / kCGMomentumScrollPhase* values. Returns
+  // the number of whole ticks to add now (0..kMaxTicksPerEvent).
+  int Consume(double distanceTicks, std::uint32_t phase, std::uint32_t momentum, double now) {
+    const bool began = (phase & 1u) != 0;                 // kCGScrollPhaseBegan
+    const bool hasPhase = phase != 0 || momentum != 0;
+    const double idle = now - lastEventTime;
+    if (began || !gestureActive) {
+      BeginGesture(now);                                  // finger re-landed / first event
+    } else if (!hasPhase && idle > kIdleGestureGap) {
+      BeginGesture(now);                                  // classic wheel: pause == new gesture
+    }
+    lastEventTime = now;
+    if (!std::isfinite(distanceTicks) || distanceTicks < 0.0) distanceTicks = 0.0;
+    if (distanceTicks > kMaxTicksPerEvent) residue = 0.0; // abnormal jump: do not bank residue
+    residue += std::min(distanceTicks, kMaxTicksPerEvent);
+    int ticks = 0;
+    while (residue >= 1.0) {
+      if (gestureTicks >= kMaxTicksPerGesture) { residue = 0.0; break; }
+      residue -= 1.0;
+      gestureTicks += 1.0;
+      ++ticks;
+      if (ticks >= static_cast<int>(kMaxTicksPerEvent)) { residue = std::fmod(residue, 1.0); break; }
+    }
+    return ticks;
+  }
+};
+
+// Absolute tick-equivalent magnitude of a raw scroll event.
+inline double ScrollTickDistance(CGEventRef event) {
+  if (!event) return 0.0;
+  const std::int64_t continuous =
+      CGEventGetIntegerValueField(event, kCGScrollWheelEventIsContinuous);
+  if (continuous) {
+    const double dx = static_cast<double>(
+        CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis1));
+    const double dy = static_cast<double>(
+        CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis2));
+    return std::hypot(dx, dy) / ScrollTickCounter::kPixelsPerTick;
+  }
+  // Line-based wheel: fixed-point line delta keeps fractional lines.
+  double dx = static_cast<double>(
+      CGEventGetIntegerValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1)) / 65536.0;
+  double dy = static_cast<double>(
+      CGEventGetIntegerValueField(event, kCGScrollWheelEventFixedPtDeltaAxis2)) / 65536.0;
+  double lines = std::hypot(dx, dy);
+  if (lines <= 0.0) {
+    dx = static_cast<double>(CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis1));
+    dy = static_cast<double>(CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis2));
+    lines = std::hypot(dx, dy) / ScrollTickCounter::kPixelsPerTick;
+  }
+  return lines;
+}
+
+}}  // namespace niuma::macos
 
 // The activity algorithm is unchanged. Each operation is a short in-memory
 // critical section; persistence and presentation never hold this mutex.
@@ -27,7 +116,8 @@ class NMSynchronizedActivity {
   NSMutableDictionary<NSString *,NSNumber *> *_days;
   unsigned long long _events,_keys,_clicks,_scrolls,_checkKeys,_checkClicks,_checkScrolls,_checkCounted,_checkExpected;
   long long _remaining;
-  double _lastScroll,_lastCount,_interval,_checkStart,_checkEnd,_checkLast;
+  double _lastCount,_interval,_checkStart,_checkEnd,_checkLast;
+  niuma::macos::ScrollTickCounter _scrollCounter;
   BOOL _checking;
   time_t _lastWallSecond;
   NSString *_dateKey;
@@ -35,7 +125,8 @@ class NMSynchronizedActivity {
 }
 - (instancetype)initWithTotal:(long long)total;
 - (void)configureCheckFrom:(double)start until:(double)end enabled:(BOOL)enabled;
-- (void)record:(CGEventType)type wall:(time_t)wall uptime:(double)uptime;
+- (void)record:(CGEventType)type wall:(time_t)wall uptime:(double)uptime
+        scrollTicks:(double)scrollTicks phase:(std::uint32_t)phase momentum:(std::uint32_t)momentum;
 - (void)invalidateDate;
 - (void)disabled:(CGEventType)type;
 - (NSDictionary *)take;
@@ -51,7 +142,8 @@ class NMSynchronizedActivity {
 }
 - (void)invalidateDate { [_lock lock];_lastWallSecond=-1;[_lock unlock]; }
 - (void)disabled:(CGEventType)type { [_lock lock]; _disabled=type; [_lock unlock]; }
-- (void)record:(CGEventType)type wall:(time_t)wall uptime:(double)uptime {
+- (void)record:(CGEventType)type wall:(time_t)wall uptime:(double)uptime
+    scrollTicks:(double)scrollTicks phase:(std::uint32_t)phase momentum:(std::uint32_t)momentum {
   [_lock lock];
   ++_events;
   BOOL checking=_checking && uptime>=_checkStart && uptime<_checkEnd;
@@ -59,10 +151,15 @@ class NMSynchronizedActivity {
   else if(type==kCGEventScrollWheel) { ++_scrolls; if(checking) ++_checkScrolls; }
   else { ++_clicks; if(checking) ++_checkClicks; }
   if(checking) _checkLast=uptime-_checkStart;
-  BOOL counted=YES;
-  if(type==kCGEventScrollWheel) { counted=_lastScroll<=0 || uptime-_lastScroll>.180; _lastScroll=uptime; }
-  if(counted && checking) ++_checkExpected;
-  if(counted && _remaining>0) {
+  // Keys and clicks add exactly one merit. A scroll wheel adds one merit per
+  // accumulated distance tick (F0), so fast/continuous scrolling is no longer
+  // folded into a single count; momentum stays inside the same gesture.
+  NSUInteger increments=1;
+  if(type==kCGEventScrollWheel)
+    increments=(NSUInteger)_scrollCounter.Consume(scrollTicks,phase,momentum,uptime);
+  if(checking) _checkExpected+=increments;
+  for(NSUInteger i=0;i<increments;i++) {
+    if(_remaining<=0) break;
     --_remaining;
     if(_lastWallSecond!=wall) {
       struct tm local{};localtime_r(&wall,&local);char key[32]{};strftime(key,sizeof(key),"%Y-%m-%d",&local);
@@ -70,6 +167,8 @@ class NMSynchronizedActivity {
     }
     _days[_dateKey]=@([_days[_dateKey] longLongValue]+1);
     if(checking) ++_checkCounted;
+  }
+  if(increments>0) {
     double gap=uptime-_lastCount;
     _interval=_lastCount<=0 || gap>.6 || gap<0 ? .22 : _interval*.65+gap*.35;
     _lastCount=uptime;
