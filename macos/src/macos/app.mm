@@ -12,6 +12,7 @@
 #include "../calendar_month_range.h"
 #include "../work_encourager.h"
 #include "../merit_curve.h"
+#include "../medals.h"
 #include "../client/core/visibility_state.h"
 #include "../reminder_activity.h"
 #include "../reminder_geometry.h"
@@ -456,6 +457,9 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   std::map<std::string, niuma::curve::CurveDay> _curveDays;
   bool _curveDirty;
   NSTimeInterval _curveLastFlushUptime;
+  // F3 勋章：从每日累计派生的达成状态（内存态 + 侧车持久化）。
+  niuma::medal::EarnedMap _medalEarned;
+  bool _medalDirty;
 }
 @property(nonatomic) BOOL readyForOpenedFiles;
 @property(nonatomic, strong) NSMutableArray<NSString *> *pendingOpenFiles;
@@ -514,6 +518,13 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, strong) NSWindow *curveWindow;
 @property(nonatomic, strong) NMCurveView *curveView;
 @property(nonatomic, strong) NSSegmentedControl *curveModeControl;
+// F3 勋章墙
+@property(nonatomic, strong) NSWindow *medalWindow;
+@property(nonatomic, strong) NSTextField *medalSummaryLabel;
+@property(nonatomic, strong) NSButton *medalWallToggle;
+@property(nonatomic, strong) NSView *medalWallContainer;
+@property(nonatomic, strong) NSPopUpButton *medalShareControl;
+@property(nonatomic, strong) NSButton *medalShareButton;
 // F1: user-selectable appearance multiplier (1.0 = 100%), applied to the whole
 // desktop widget. uiScale is the effective design->point scale (base * factor,
 // capped by the visible screen area).
@@ -696,6 +707,15 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)showMeritCurve:(id)sender;
 - (void)exportCurveShareCard:(id)sender;
 - (void)curveModeChanged:(id)sender;
+// F3 勋章
+- (void)loadMedalsState;
+- (void)evaluateMedals;
+- (void)saveMedals;
+- (void)showMedals:(id)sender;
+- (void)toggleMedalWall:(id)sender;
+- (void)refreshMedalWall;
+- (void)shareSelectedMedal:(id)sender;
+- (unsigned long long)medalPeriodValue:(niuma::medal::Period)period;
 @end
 
 @implementation MeritView
@@ -1914,6 +1934,343 @@ static BOOL NMParseU64(const char *text, std::uint64_t *out) {
   };
 }
 
+// ---- F3 勋章 ----
+static NSString *NMMedalPeriodLabel(niuma::medal::Period period) {
+  switch (period) {
+    case niuma::medal::Period::Day: return UiText(@"日", @"Day");
+    case niuma::medal::Period::Week: return UiText(@"周", @"Week");
+    case niuma::medal::Period::Month: return UiText(@"月", @"Month");
+  }
+  return UiText(@"日", @"Day");
+}
+static NSString *NMMedalTierLabel(int tier) {
+  if (tier == 0) return UiText(@"铜", @"Bronze");
+  if (tier == 1) return UiText(@"银", @"Silver");
+  return UiText(@"金", @"Gold");
+}
+static NSString *NMMedalTierEnglish(int tier) {
+  if (tier == 0) return @"Bronze";
+  if (tier == 1) return @"Silver";
+  return @"Gold";
+}
+static NSString *NMMedalPeriodEnglish(niuma::medal::Period period) {
+  switch (period) {
+    case niuma::medal::Period::Day: return @"Daily";
+    case niuma::medal::Period::Week: return @"Weekly";
+    case niuma::medal::Period::Month: return @"Monthly";
+  }
+  return @"Daily";
+}
+static NSString *NMMedalIcon(int tier) {
+  if (tier == 0) return @"🥉";
+  if (tier == 1) return @"🥈";
+  return @"🥇";
+}
+
+- (void)loadMedalsState {
+  _medalEarned.clear();
+  _medalDirty = false;
+  if (!self.metrics) return;
+  NSDictionary *medals = [self.metrics medals];
+  NSDictionary *earned = medals[@"earned"];
+  if (![earned isKindOfClass:NSDictionary.class]) return;
+  for (NSString *key in earned) {
+    if (![key isKindOfClass:NSString.class]) continue;
+    NSDictionary *record = earned[key];
+    if (![record isKindOfClass:NSDictionary.class]) continue;
+    niuma::medal::Earned value;
+    id first = record[@"first_earned_day"];
+    id count = record[@"count"];
+    id last = record[@"last_period"];
+    if ([first isKindOfClass:NSString.class]) value.first_earned_day = [first UTF8String] ?: "";
+    if ([count isKindOfClass:NSNumber.class]) value.count = [count unsignedIntValue];
+    if ([last isKindOfClass:NSString.class]) value.last_period = [last UTF8String] ?: "";
+    value.lit = value.count > 0 || value.first_earned_day.size() > 0;
+    _medalEarned[std::string(key.UTF8String)] = value;
+  }
+}
+
+- (unsigned long long)medalPeriodValue:(niuma::medal::Period)period {
+  NSDateComponents *comp = [RecordCalendar() components:
+      NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:NSDate.date];
+  const int year = (int)comp.year, month = (int)comp.month, day = (int)comp.day;
+  if (period == niuma::medal::Period::Day)
+    return [self.dailyTotals[DateKeyForDate(NSDate.date)] unsignedLongLongValue];
+  std::vector<std::string> keys = period == niuma::medal::Period::Week
+      ? niuma::curve::WeekDayKeys(year, month, day)
+      : niuma::curve::MonthDayKeys(year, month);
+  return niuma::medal::SumRange(keys, [self](const std::string &key) -> std::uint64_t {
+    NSString *k = [NSString stringWithUTF8String:key.c_str()];
+    return [self.dailyTotals[k] unsignedLongLongValue];
+  });
+}
+
+- (void)evaluateMedals {
+  NSDateComponents *comp = [RecordCalendar() components:
+      NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:NSDate.date];
+  const int year = (int)comp.year, month = (int)comp.month, day = (int)comp.day;
+  NSString *todayKey = DateKeyForDate(NSDate.date);
+  const std::string today(todayKey.UTF8String ?: "");
+  const niuma::medal::Thresholds thresholds = niuma::medal::BuiltinThresholds();
+  bool changed = false;
+  changed |= niuma::medal::EvaluatePeriod(&_medalEarned, niuma::medal::Period::Day, thresholds,
+      niuma::medal::DayPeriodKey(today), today,
+      [self.dailyTotals[todayKey] unsignedLongLongValue]);
+  changed |= niuma::medal::EvaluatePeriod(&_medalEarned, niuma::medal::Period::Week, thresholds,
+      niuma::medal::WeekPeriodKey(year, month, day), today, [self medalPeriodValue:niuma::medal::Period::Week]);
+  changed |= niuma::medal::EvaluatePeriod(&_medalEarned, niuma::medal::Period::Month, thresholds,
+      niuma::medal::MonthPeriodKey(year, month), today, [self medalPeriodValue:niuma::medal::Period::Month]);
+  changed |= niuma::medal::UpdateAchievement(&_medalEarned, today);
+  if (changed) {
+    _medalDirty = true;
+    [self saveMedals];
+    if (self.medalWindow.isVisible) [self refreshMedalWall];
+  }
+}
+
+- (void)saveMedals {
+  if (!self.metrics) return;
+  NSMutableDictionary *medals = [self.metrics medals];
+  medals[@"thresholds_version"] = kNiuMa096ThresholdsVersion;
+  NSMutableDictionary *earned = [NSMutableDictionary dictionaryWithCapacity:_medalEarned.size()];
+  for (const auto &entry : _medalEarned) {
+    NSMutableDictionary *record = [NSMutableDictionary dictionary];
+    record[@"count"] = @(entry.second.count);
+    if (!entry.second.first_earned_day.empty())
+      record[@"first_earned_day"] = [NSString stringWithUTF8String:entry.second.first_earned_day.c_str()];
+    if (!entry.second.last_period.empty())
+      record[@"last_period"] = [NSString stringWithUTF8String:entry.second.last_period.c_str()];
+    earned[[NSString stringWithUTF8String:entry.first.c_str()]] = record;
+  }
+  medals[@"earned"] = earned;
+  [self.metrics save];
+  _medalDirty = false;
+}
+
+- (void)toggleMedalWall:(id)sender {
+  (void)sender;
+  BOOL expanded = self.medalWallToggle.state == NSControlStateValueOn;
+  self.medalWallContainer.hidden = !expanded;
+  [self refreshMedalWall];
+}
+
+- (void)refreshMedalWall {
+  if (!self.medalWindow) return;
+  int litCount = 0;
+  for (const auto &entry : _medalEarned)
+    if (entry.second.lit) ++litCount;
+  BOOL achievement = _medalEarned.count("achievement.all") && _medalEarned["achievement.all"].lit;
+  self.medalSummaryLabel.stringValue = [NSString stringWithFormat:
+      UiText(@"已点亮 %d / 9 枚勋章 · 集齐成就：%@", @"Unlocked %d / 9 medals · Collector: %@"),
+      litCount, achievement ? UiText(@"已达成", @"Achieved") : UiText(@"未达成", @"Not yet")];
+
+  // 重建勋章墙网格（默认收起时隐藏）。
+  for (NSView *view in self.medalWallContainer.subviews) [view removeFromSuperview];
+  const niuma::medal::Thresholds thresholds = niuma::medal::BuiltinThresholds();
+  const CGFloat cellW = 190, cellH = 96;
+  for (int row = 0; row < 3; ++row) {
+    niuma::medal::Period period = (niuma::medal::Period)row;
+    CGFloat rowY = 300 - row * 104;
+    for (int tier = 0; tier < 3; ++tier) {
+      std::string key = niuma::medal::MedalKey(period, tier);
+      auto it = _medalEarned.find(key);
+      BOOL lit = it != _medalEarned.end() && it->second.lit;
+      NSString *text;
+      if (lit) {
+        NSString *first = [NSString stringWithUTF8String:it->second.first_earned_day.c_str()];
+        text = [NSString stringWithFormat:@"%@ %@ · %@\n%@ ×%u\n%@ %@",
+            NMMedalIcon(tier), NMMedalPeriodLabel(period), NMMedalTierLabel(tier),
+            UiText(@"已点亮", @"Unlocked"), it->second.count,
+            UiText(@"首次", @"First"), first.length ? first : @"—"];
+      } else {
+        text = [NSString stringWithFormat:@"🔒 %@ · %@\n%@\n%@ %llu",
+            NMMedalPeriodLabel(period), NMMedalTierLabel(tier),
+            UiText(@"未点亮", @"Locked"),
+            UiText(@"阈值", @"Threshold"), (unsigned long long)thresholds.For(period)[tier]];
+      }
+      NSTextField *cell = [NSTextField wrappingLabelWithString:text];
+      cell.frame = NSMakeRect(tier * (cellW + 10), rowY, cellW, cellH);
+      cell.font = [NSFont systemFontOfSize:12];
+      cell.textColor = lit ? NMUiInk() : NMUiMuted();
+      cell.alignment = NSTextAlignmentCenter;
+      cell.wantsLayer = YES;
+      cell.layer.backgroundColor = (lit ? [NSColor colorWithCalibratedRed:.99 green:.95 blue:.86 alpha:1]
+                                        : [NSColor colorWithCalibratedWhite:.96 alpha:1]).CGColor;
+      cell.layer.cornerRadius = 10;
+      [self.medalWallContainer addSubview:cell];
+    }
+  }
+  // 集齐成就
+  BOOL achLit = _medalEarned.count("achievement.all") && _medalEarned["achievement.all"].lit;
+  NSTextField *ach = [NSTextField wrappingLabelWithString:achLit
+      ? [NSString stringWithFormat:@"🏆 %@\n%@ %@", UiText(@"集齐成就", @"Collector Achievement"),
+          UiText(@"已于", @"Achieved"), [NSString stringWithUTF8String:_medalEarned["achievement.all"].first_earned_day.c_str()]]
+      : [NSString stringWithFormat:@"🏆 %@\n%@", UiText(@"集齐成就", @"Collector Achievement"), UiText(@"集齐 9 枚勋章后解锁", @"Unlocks after all 9 medals")]];
+  ach.frame = NSMakeRect(0, 0, cellW * 3 + 20, 80);
+  ach.font = [NSFont systemFontOfSize:12];
+  ach.alignment = NSTextAlignmentCenter;
+  ach.textColor = achLit ? NMUiInk() : NMUiMuted();
+  [self.medalWallContainer addSubview:ach];
+
+  // 分享下拉：只列出已点亮的勋章。
+  [self.medalShareControl removeAllItems];
+  for (int row = 0; row < 3; ++row) {
+    niuma::medal::Period period = (niuma::medal::Period)row;
+    for (int tier = 0; tier < 3; ++tier) {
+      std::string key = niuma::medal::MedalKey(period, tier);
+      auto it = _medalEarned.find(key);
+      if (it == _medalEarned.end() || !it->second.lit) continue;
+      NSString *title = [NSString stringWithFormat:@"%@ %@ · %@", NMMedalIcon(tier),
+          NMMedalPeriodLabel(period), NMMedalTierLabel(tier)];
+      [self.medalShareControl addItemWithTitle:title];
+      self.medalShareControl.lastItem.representedObject =
+          [NSString stringWithUTF8String:key.c_str()];
+    }
+  }
+  if (achLit) {
+    [self.medalShareControl addItemWithTitle:[NSString stringWithFormat:@"🏆 %@",
+        UiText(@"集齐成就", @"Collector Achievement")]];
+    self.medalShareControl.lastItem.representedObject = @"achievement.all";
+  }
+  BOOL any = self.medalShareControl.numberOfItems > 0;
+  self.medalShareControl.enabled = any;
+  self.medalShareButton.enabled = any;
+  if (!any) {
+    [self.medalShareControl addItemWithTitle:UiText(@"暂无已点亮勋章", @"No medals yet")];
+    self.medalShareControl.enabled = NO;
+  }
+}
+
+- (void)showMedals:(id)sender {
+  (void)sender;
+  if (!self.medalWindow) {
+    NSRect frame = NSMakeRect(0, 0, 660, 680);
+    NSView *content = [[NSView alloc] initWithFrame:frame];
+    self.medalSummaryLabel = [NSTextField labelWithString:@""];
+    self.medalSummaryLabel.frame = NSMakeRect(24, 632, 612, 26);
+    self.medalSummaryLabel.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
+    [content addSubview:self.medalSummaryLabel];
+    self.medalWallToggle = [NSButton checkboxWithTitle:UiText(@"展开勋章墙", @"Show medal wall")
+        target:self action:@selector(toggleMedalWall:)];
+    self.medalWallToggle.frame = NSMakeRect(24, 598, 240, 24);
+    self.medalWallToggle.state = NSControlStateValueOff;  // 设置内默认收起
+    [content addSubview:self.medalWallToggle];
+    self.medalWallContainer = [[NSView alloc] initWithFrame:NSMakeRect(24, 170, 612, 400)];
+    self.medalWallContainer.hidden = YES;
+    [content addSubview:self.medalWallContainer];
+    NSTextField *shareLabel = [NSTextField labelWithString:UiText(@"勋章分享图", @"Medal share image")];
+    shareLabel.frame = NSMakeRect(24, 140, 200, 20);
+    shareLabel.font = [NSFont systemFontOfSize:12];
+    shareLabel.textColor = NMUiMuted();
+    [content addSubview:shareLabel];
+    self.medalShareControl = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(24, 106, 300, 28) pullsDown:NO];
+    [content addSubview:self.medalShareControl];
+    self.medalShareButton = [NSButton buttonWithTitle:UiText(@"导出分享图…", @"Export Share Image…")
+        target:self action:@selector(shareSelectedMedal:)];
+    self.medalShareButton.frame = NSMakeRect(336, 104, 180, 30);
+    [content addSubview:self.medalShareButton];
+    NSTextField *explanation = [NSTextField wrappingLabelWithString:UiText(
+        @"勋章按自然日 / 自然周（周一–周日）/ 自然月归集，达到阈值即永久点亮并记录次数。阈值为 v3 占位值（thresholds_version = builtin-2026-11-08），上线后按 F0 新口径校准。分享图由用户主动导出，单张 PNG，不含本机路径、账号或原始时段数据。",
+        @"Medals tally by natural day / week (Mon–Sun) / month; reaching a threshold permanently unlocks it and records the count. Thresholds are v3 placeholders (thresholds_version = builtin-2026-11-08) pending F0 calibration. Share images are exported by the user as a single PNG with no local paths, account IDs, or raw interval data.")];
+    explanation.frame = NSMakeRect(24, 20, 470, 76);
+    explanation.font = [NSFont systemFontOfSize:11];
+    explanation.textColor = NMUiMuted();
+    [content addSubview:explanation];
+    NSButton *close = [NSButton buttonWithTitle:UiText(@"关闭", @"Close")
+        target:self action:@selector(closeMedals:)];
+    close.frame = NSMakeRect(540, 20, 96, 30);
+    close.keyEquivalent = @"\r";
+    [content addSubview:close];
+    self.medalWindow = [[NSWindow alloc] initWithContentRect:frame
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+        backing:NSBackingStoreBuffered defer:NO];
+    self.medalWindow.title = UiText(@"勋章与成就", @"Medals & Achievements");
+    self.medalWindow.contentView = content;
+    self.medalWindow.releasedWhenClosed = NO;
+    if (gIsolatedAcceptance) self.medalWindow.restorable = NO;
+    NMUiWindow(self.medalWindow);
+    [self.medalWindow center];
+  }
+  [self evaluateMedals];
+  [self refreshMedalWall];
+  [NSApp activateIgnoringOtherApps:YES];
+  [self.medalWindow makeKeyAndOrderFront:nil];
+}
+
+- (void)closeMedals:(id)sender {
+  (void)sender;
+  [self.medalWindow close];
+}
+
+- (void)shareSelectedMedal:(id)sender {
+  (void)sender;
+  NSString *key = self.medalShareControl.selectedItem.representedObject;
+  if (![key isKindOfClass:NSString.class]) return;
+  const std::string medalKey(key.UTF8String ?: "");
+  niuma::medal::Period period = niuma::medal::Period::Day;
+  int tier = 0;
+  const bool isAchievement = medalKey == "achievement.all";
+  if (!isAchievement && !niuma::medal::ParseMedalKey(medalKey, &period, &tier)) return;
+  auto it = _medalEarned.find(medalKey);
+  if (it == _medalEarned.end() || !it->second.lit) return;
+
+  NMShareCardModel *model = [NMShareCardModel new];
+  model.kind = NMShareCardKindMedal;
+  model.locale = CurrentUiLanguageTag();
+  model.appVersion = kNiuMa096AppVersion;
+  model.generatedOn = DateKeyForDate(NSDate.date);
+  model.title = UiText(@"牛马电子功德", @"NiuMa Merit");
+  model.footerProduct = UiText(@"牛马电子功德", @"NiuMa Merit");
+  model.footerWatermark = @"niuma-merit 0.9.6";
+  model.medalEarnedDay = [NSString stringWithUTF8String:it->second.first_earned_day.c_str()];
+  model.medalCount = it->second.count;
+  if (isAchievement) {
+    model.subtitle = UiText(@"集齐成就", @"Collector Achievement");
+    model.meritPeriod = @"all";
+    unsigned long long total = 0;
+    for (NSString *k in self.dailyTotals) {
+      unsigned long long v = [self.dailyTotals[k] unsignedLongLongValue];
+      total = (v > ULLONG_MAX - total) ? ULLONG_MAX : total + v;
+    }
+    model.meritValue = total;
+    model.medalPeriod = @"all";
+    model.medalTier = @"gold";
+  } else {
+    model.medalPeriod = [NSString stringWithUTF8String:niuma::medal::PeriodName(period)];
+    model.medalTier = [NSString stringWithUTF8String:niuma::medal::TierName(tier)];
+    model.meritPeriod = model.medalPeriod;
+    model.meritValue = [self medalPeriodValue:period];
+    NSString *periodName = IsChineseUI() ? NMMedalPeriodLabel(period)
+                                         : NMMedalPeriodEnglish(period);
+    model.subtitle = [NSString stringWithFormat:UiText(@"%@%@牌", @"%@ %@"),
+        periodName, NMMedalTierLabel(tier)];
+    if (!IsChineseUI())
+      model.subtitle = [NSString stringWithFormat:@"%@ %@", NMMedalPeriodEnglish(period),
+          NMMedalTierEnglish(tier)];
+  }
+  if (self.encouragerActive) {
+    model.moneyDisplay = self.encouragerDisplayAmount;
+    model.moneyCurrency = self.encouragerCurrency;
+    model.moneyExponent = niuma::encourager::ExponentForCode(
+        std::string(self.encouragerCurrency.UTF8String ?: "CNY"));
+    model.moneyAmountMinor = 0;
+  }
+  NSData *png = NMRenderShareCardPNG(model, 1000, 1250);
+  NSString *defaultName = isAchievement ? @"niuma-merit-achievement.png"
+      : [NSString stringWithFormat:@"niuma-merit-medal-%@-%@.png",
+          model.medalPeriod, model.medalTier];
+  if (!png || !NMSaveShareCardPNG(png, self.medalWindow, defaultName)) {
+    if (!png) {
+      NSAlert *alert = [[NMUiAlert alloc] init];
+      alert.messageText = UiText(@"导出失败", @"Export Failed");
+      alert.informativeText = UiText(@"未能生成分享图，请稍后重试。",
+          @"Could not generate the share image. Please try again.");
+      [alert addButtonWithTitle:UiText(@"好", @"OK")];
+      [alert runModal];
+    }
+  }
+}
+
 - (void)loadState {
   id<NMMeritPreferences> defaults = MeritPreferences();
   self.total = [defaults integerForKey:kTotal];
@@ -1943,6 +2300,7 @@ static BOOL NMParseU64(const char *text, std::uint64_t *out) {
 - (void)saveState {
   [self drainInput];
   [self markCurveHeartbeat];
+  [self evaluateMedals];
   if (_curveDirty &&
       NSProcessInfo.processInfo.systemUptime - _curveLastFlushUptime >= 15)
     [self flushCurve];
@@ -2335,6 +2693,7 @@ static BOOL NMParseU64(const char *text, std::uint64_t *out) {
       [self.metrics load];
       [self loadEncouragerState];
       [self loadCurveState];
+      [self loadMedalsState];
     }
   }
   if (!gIsolatedAcceptance || gAcceptanceRootPath.length) {
@@ -2460,6 +2819,7 @@ static BOOL NMParseU64(const char *text, std::uint64_t *out) {
       name:@"com.apple.screenIsUnlocked" object:nil suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
   [self startOffworkTimer];
   [self startEncouragerTimer];
+  [self evaluateMedals];
   [self.window orderFrontRegardless];
   [self refreshAppearanceVisibility:nil];
   if (previousAppearanceMissing || self.appearanceLoadError) {
@@ -2686,6 +3046,7 @@ static BOOL NMParseU64(const char *text, std::uint64_t *out) {
   self.encouragerTimer = nil;
   [self saveState];
   [self flushCurve];
+  if (_medalDirty) [self saveMedals];
   [self saveMetrics];
   [self.saveTimer invalidate]; self.saveTimer=nil;
   [self.dayTimer invalidate];
@@ -3539,6 +3900,10 @@ static BOOL NMParseU64(const char *text, std::uint64_t *out) {
              action:@selector(showEncouragerSettings:) keyEquivalent:@""];
   encourager.target = self;
   encourager.state = self.encouragerActive ? NSControlStateValueOn : NSControlStateValueOff;
+  NSMenuItem *medals = [[NSMenuItem alloc]
+      initWithTitle:UiText(@"勋章与成就…", @"Medals & Achievements…")
+             action:@selector(showMedals:) keyEquivalent:@""];
+  medals.target = self;
   NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:UiText(@"退出", @"Quit")
                                                 action:@selector(terminate:)
                                          keyEquivalent:@""];
@@ -3557,12 +3922,12 @@ static BOOL NMParseU64(const char *text, std::uint64_t *out) {
       action:@selector(toggleAutoHideFullscreen:) keyEquivalent:@""];
   autoHide.target = self;
   autoHide.state = _visibility.autoHideFullscreen ? NSControlStateValueOn : NSControlStateValueOff;
-  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, curveItem, offwork, encourager, launchAtLogin, about, quit];
+  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, curveItem, offwork, encourager, medals, launchAtLogin, about, quit];
   for (NSMenuItem *item in entries) [menu addItem:item];
   NSFont *menuFont = [NSFont systemFontOfSize:14];
   menu.font = menuFont;
   if (@available(macOS 11.0, *)) {
-    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"chart.bar", @"clock", @"yensign.circle", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
+    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"chart.bar", @"clock", @"yensign.circle", @"rosette", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
     for (NSUInteger index = 0; index < entries.count; ++index) {
       NSImage *image = [NSImage imageWithSystemSymbolName:symbols[index] accessibilityDescription:nil];
       image.size = NSMakeSize(16, 16); ((NSMenuItem *)entries[index]).image = image;
