@@ -260,6 +260,50 @@ inline bool JsonExactFields(const JsonValue& object,
   return true;
 }
 
+// Like JsonExactFields but tolerates a declared set of optional keys. Every
+// required key must be present and no undeclared key may appear. This is used so
+// 0.9.6-only fields (such as min_client_version) can be added without forcing
+// every legacy pack to carry them.
+inline bool JsonFieldsWithOptional(const JsonValue& object,
+                                   std::initializer_list<const char*> required,
+                                   std::initializer_list<const char*> optional) {
+  if (object.kind != JsonValue::Kind::Object) return false;
+  for (const char* name : required)
+    if (object.object.find(name) == object.object.end()) return false;
+  const std::size_t allowed = required.size() + optional.size();
+  if (object.object.size() > allowed) return false;
+  for (const auto& entry : object.object) {
+    bool known = false;
+    for (const char* name : required)
+      if (entry.first == name) { known = true; break; }
+    if (!known)
+      for (const char* name : optional)
+        if (entry.first == name) { known = true; break; }
+    if (!known) return false;
+  }
+  return true;
+}
+
+// Minimal "MAJOR[.MINOR[.PATCH[.BUILD]]]" version check: 1 to 4 dot-separated
+// runs of digits. Used only for the optional min_client_version field.
+inline bool ValidVersionString(const std::string& value) {
+  if (value.empty() || value.size() > 32) return false;
+  std::size_t parts = 0;
+  std::size_t index = 0;
+  while (index < value.size()) {
+    const std::size_t start = index;
+    while (index < value.size() && value[index] >= '0' && value[index] <= '9') ++index;
+    if (index == start) return false;
+    ++parts;
+    if (index < value.size()) {
+      if (value[index] != '.') return false;
+      ++index;
+      if (index == value.size()) return false;  // trailing dot is invalid
+    }
+  }
+  return parts >= 1 && parts <= 4;
+}
+
 inline bool JsonString(const JsonValue* value, std::string* output) {
   if (value == nullptr || value->kind != JsonValue::Kind::String) return false;
   *output = value->string;
@@ -293,6 +337,20 @@ inline bool ValidCatalogId(const std::string& id) {
   return true;
 }
 
+// Content languages accepted by the 0.9.6 loader. Legacy packs used "zh-CN" for
+// Simplified Chinese; new packs may use BCP-47 "zh-Hans"/"zh-Hant"/"ja" as well.
+inline bool SupportedContentLanguage(const std::string& language) {
+  return language == "zh-CN" || language == "zh-Hans" || language == "zh-Hant" ||
+      language == "ja" || language == "en";
+}
+
+// Per-item text budget in UTF-8 code points. Mirrors the original 80/160 split:
+// double-width CJK scripts (Simplified, Traditional, Japanese) use the tighter
+// budget, Latin uses the wider one.
+inline std::size_t ContentTextLimit(const std::string& language) {
+  return language == "en" ? 160 : 80;
+}
+
 struct OwnedCatalogItem {
   std::string id, language, category, tone, text, festival_id, regions;
   CatalogItem row{};
@@ -305,6 +363,11 @@ struct OwnedCalendar {
 
 struct ValidatedCatalog {
   std::uint32_t content_version = 0;
+  // Optional minimum client version declared by the pack. Empty means the pack
+  // is compatible with any client that understands its schema. The loader (not
+  // this validator) enforces the comparison and keeps the previous pack when
+  // the running client is older.
+  std::string min_client_version;
   std::string calendar_version;
   int calendar_year_start = 0;
   int calendar_year_end = 0;
@@ -408,9 +471,10 @@ inline bool ValidateCatalogPayload(const std::string& payload,
   auto fail = [error](const char* reason) { if (error) *error = reason; return false; };
   JsonValue root;
   if (!JsonParser(payload).Parse(&root, error, 12)) return false;
-  if (!JsonExactFields(root, {"schema_version", "catalog_id", "content_version",
+  if (!JsonFieldsWithOptional(root, {"schema_version", "catalog_id", "content_version",
       "calendar_version", "calendar_year_start", "calendar_year_end", "languages",
-      "items", "calendars"})) return fail("catalog root fields are invalid");
+      "items", "calendars"}, {"min_client_version"}))
+    return fail("catalog root fields are invalid");
   std::int64_t number = 0;
   if (!JsonInteger(JsonField(root, "schema_version"), &number) || number != 2)
     return fail("unsupported catalog schema");
@@ -418,6 +482,11 @@ inline bool ValidateCatalogPayload(const std::string& payload,
   if (!JsonString(JsonField(root, "catalog_id"), &text) || text != "official.multilingual")
     return fail("unknown catalog identifier");
   auto catalog = std::make_shared<ValidatedCatalog>();
+  if (const JsonValue* min_client = JsonField(root, "min_client_version")) {
+    if (!JsonString(min_client, &catalog->min_client_version) ||
+        !ValidVersionString(catalog->min_client_version))
+      return fail("invalid minimum client version");
+  }
   if (!JsonInteger(JsonField(root, "content_version"), &number) || number < 1 || number > UINT32_MAX)
     return fail("invalid catalog version");
   catalog->content_version = static_cast<std::uint32_t>(number);
@@ -434,10 +503,15 @@ inline bool ValidateCatalogPayload(const std::string& payload,
   catalog->calendar_year_end = static_cast<int>(number);
 
   const JsonValue* languages = JsonField(root, "languages");
-  if (languages == nullptr || languages->kind != JsonValue::Kind::Array || languages->array.size() != 2 ||
-      languages->array[0].kind != JsonValue::Kind::String || languages->array[1].kind != JsonValue::Kind::String ||
-      languages->array[0].string != "zh-CN" || languages->array[1].string != "en")
-    return fail("catalog must include the supported Chinese and English languages");
+  if (languages == nullptr || languages->kind != JsonValue::Kind::Array ||
+      languages->array.empty() || languages->array.size() > 8)
+    return fail("catalog must declare at least one supported language");
+  std::set<std::string> declared_languages;
+  for (const JsonValue& language : languages->array) {
+    if (language.kind != JsonValue::Kind::String || !SupportedContentLanguage(language.string) ||
+        !declared_languages.insert(language.string).second)
+      return fail("catalog language list contains an unsupported or duplicate language");
+  }
 
   const JsonValue* calendar_values = JsonField(root, "calendars");
   if (calendar_values == nullptr || calendar_values->kind != JsonValue::Kind::Array ||
@@ -449,7 +523,8 @@ inline bool ValidateCatalogPayload(const std::string& payload,
     const JsonValue* type_value = JsonField(value, "type");
     if (!JsonString(JsonField(value, "id"), &id) || !JsonString(JsonField(value, "language"), &language) ||
         !JsonString(type_value, &type) || id.empty() || id.size() > 64 ||
-        (language != "zh-CN" && language != "en") || !calendar_ids.insert(id).second)
+        !SupportedContentLanguage(language) || !declared_languages.count(language) ||
+        !calendar_ids.insert(id).second)
       return fail("invalid or duplicate calendar");
     auto owned = std::make_unique<OwnedCalendar>();
     owned->id = id; owned->language = language; owned->type = type;
@@ -494,7 +569,7 @@ inline bool ValidateCatalogPayload(const std::string& payload,
   if (items == nullptr || items->kind != JsonValue::Kind::Array || items->array.empty() ||
       items->array.size() > 3000) return fail("invalid item list size");
   std::set<std::string> item_ids;
-  std::size_t language_counts[2] = {};
+  std::map<std::string, std::size_t> language_counts;
   for (const JsonValue& value : items->array) {
     if (!JsonExactFields(value, {"id", "language", "category", "tone", "text", "triggers",
         "requires_overtime", "local_time", "festival_id", "before_days", "after_days", "regions"}))
@@ -504,10 +579,10 @@ inline bool ValidateCatalogPayload(const std::string& payload,
         !JsonString(JsonField(value, "category"), &owned->category) || !JsonString(JsonField(value, "tone"), &owned->tone) ||
         !JsonString(JsonField(value, "text"), &owned->text) || !ValidCatalogId(owned->id) ||
         !item_ids.insert(owned->id).second) return fail("invalid or duplicate item ID/text fields");
-    if (owned->language == "zh-CN") ++language_counts[0];
-    else if (owned->language == "en") ++language_counts[1];
-    else return fail("unsupported item language");
-    const std::size_t text_limit = owned->language == "zh-CN" ? 80 : 160;
+    if (!SupportedContentLanguage(owned->language) || !declared_languages.count(owned->language))
+      return fail("unsupported item language");
+    ++language_counts[owned->language];
+    const std::size_t text_limit = ContentTextLimit(owned->language);
     if (!ValidCatalogText(owned->text, 4, text_limit)) return fail("item text is invalid or outside length limits");
     if ((owned->category != "ordinary" && owned->category != "festival") ||
         (owned->tone != "humor" && owned->tone != "warm")) return fail("invalid item category or tone");
@@ -570,7 +645,9 @@ inline bool ValidateCatalogPayload(const std::string& payload,
     catalog->items.push_back(owned->row);
     catalog->owned_items.push_back(std::move(owned));
   }
-  if (language_counts[0] == 0 || language_counts[1] == 0) return fail("catalog is missing a supported language");
+  for (const std::string& language : declared_languages)
+    if (language_counts[language] == 0)
+      return fail("catalog is missing content for a declared language");
   if (output == nullptr) return fail("missing catalog output");
   *output = std::move(catalog);
   if (error) error->clear();

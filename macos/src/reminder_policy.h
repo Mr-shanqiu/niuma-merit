@@ -13,8 +13,62 @@ namespace niuma::reminder {
 
 inline constexpr unsigned kReminderDisplayMilliseconds = 15'000;
 
-enum class Locale : std::uint8_t { Chinese, English };
+// UI locale. Chinese/English keep their original enumerator names and values so
+// existing callers (app.mm / app.cpp) stay source- and ABI-compatible. The two
+// additional members cover the 0.9.6 public languages.
+enum class Locale : std::uint8_t { Chinese, English, ChineseTraditional, Japanese };
 enum class Overtime : std::uint8_t { Unknown, No, Yes };
+
+// Canonical content-language tag used by data packs for each UI locale.
+inline const char* LocaleLanguage(Locale locale) {
+  switch (locale) {
+    case Locale::Chinese: return "zh-Hans";
+    case Locale::ChineseTraditional: return "zh-Hant";
+    case Locale::Japanese: return "ja";
+    case Locale::English: return "en";
+  }
+  return "en";
+}
+
+// Legacy catalog packs tag Simplified Chinese as "zh-CN"; treat both legacy
+// "zh-CN" and BCP-47 "zh-Hans" as the same content language. Every other tag is
+// returned unchanged.
+inline const char* CanonicalContentLanguage(const char* tag) {
+  if (tag == nullptr) return "";
+  if (std::strcmp(tag, "zh-CN") == 0 || std::strcmp(tag, "zh-Hans") == 0) return "zh-Hans";
+  return tag;
+}
+
+// Best-effort mapping from a BCP-47 language tag (e.g. "zh-Hant-TW", "ja-JP") to
+// a supported UI locale. Unknown or empty tags fall back to Simplified Chinese,
+// matching the client's default UI language. Callers detect the system language;
+// this only normalises the tag.
+inline Locale LocaleFromLanguageTag(const char* tag) {
+  if (tag == nullptr || tag[0] == '\0') return Locale::Chinese;
+  const auto lower = [](char c) -> char {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+  };
+  const auto starts_with = [&](const char* prefix) -> bool {
+    std::size_t index = 0;
+    for (; prefix[index] != '\0'; ++index) {
+      if (tag[index] == '\0' || lower(tag[index]) != prefix[index]) return false;
+    }
+    return true;
+  };
+  if (starts_with("ja")) return Locale::Japanese;
+  if (starts_with("en")) return Locale::English;
+  if (starts_with("zh")) {
+    std::string lowered(tag);
+    for (char& c : lowered) c = lower(c);
+    if (lowered.find("hant") != std::string::npos ||
+        lowered.find("-tw") != std::string::npos ||
+        lowered.find("-hk") != std::string::npos ||
+        lowered.find("-mo") != std::string::npos)
+      return Locale::ChineseTraditional;
+    return Locale::Chinese;
+  }
+  return Locale::Chinese;
+}
 
 struct SelectionContext {
   Locale locale = Locale::Chinese;
@@ -134,10 +188,11 @@ std::vector<const CatalogItem*> EligibleItems(const SelectionContext& context,
   if (context.year < 1900 || context.year > 9999 || context.month < 1 ||
       context.month > 12 || context.day < 1 || context.day > 31 ||
       context.minute_of_day < 0 || context.minute_of_day >= 1440) return output;
-  const char* language = context.locale == Locale::Chinese ? "zh-CN" : "en";
+  const char* language = CanonicalContentLanguage(LocaleLanguage(context.locale));
   for (std::size_t index = 0; index < catalog.item_count; ++index) {
     const CatalogItem& item = catalog.items[index];
-    if (std::strcmp(item.language, language) != 0 || (item.triggers & context.trigger) == 0)
+    if (std::strcmp(CanonicalContentLanguage(item.language), language) != 0 ||
+        (item.triggers & context.trigger) == 0)
       continue;
     if (!RegionMatches(item.regions, context.region)) continue;
     if (item.requires_overtime && context.overtime != Overtime::Yes) continue;
