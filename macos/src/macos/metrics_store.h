@@ -13,7 +13,9 @@
 
 #import <Foundation/Foundation.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -70,6 +72,19 @@ static NSDictionary *NM096DefaultRoot(void) {
     @"medals" : [NM096DefaultMedals() mutableCopy],
     @"curve" : [NM096DefaultCurve() mutableCopy],
   }];
+}
+
+// F1 形象缩放：CONTRACT_096 §13.2 规定 prefs.appearance_scale 以侧车为准，
+// macOS 旧 NSUserDefaults 键只读作迁移回退。该纯函数把「侧车是否有值」与两侧
+// 候选值合成最终缩放，并统一钳制到 §3 的 0.6..1.8。旧键只有本应用写入过的
+// NSNumber 才被接受；其余类型按「无值」处理（与侧车块的类型校验一致）。
+static double NM096ResolveAppearanceScale(BOOL sidecarHasValue, id sidecarValue,
+                                          id legacyValue) {
+  id source = sidecarHasValue ? sidecarValue : legacyValue;
+  if (![source isKindOfClass:NSNumber.class]) return 1.0;
+  double scale = [source doubleValue];
+  if (!std::isfinite(scale)) scale = 1.0;
+  return std::clamp(scale, 0.6, 1.8);
 }
 
 // ---- 块级校验辅助 ----
@@ -129,6 +144,9 @@ static BOOL NM096ValidPrefs(NSDictionary *b) {
 // 最近一次读取是否走了恢复/重建路径（诊断）。
 @property(nonatomic) BOOL recoveredFromPrevious;
 @property(nonatomic) BOOL rebuiltCorrupt;
+// 侧车 prefs 块在加载时是否自带合法 appearance_scale。首次创建或坏块降级
+// 都不算「有值」，以便上层执行一次旧 NSUserDefaults 迁移回退（§13.2）。
+@property(nonatomic, readonly) BOOL hasStoredAppearanceScale;
 
 + (instancetype)storeInDirectory:(NSString *)directory;
 
@@ -143,6 +161,10 @@ static BOOL NM096ValidPrefs(NSDictionary *b) {
 - (NSMutableDictionary *)prefs;
 - (NSMutableDictionary *)migration;
 
+@end
+
+@interface NMMetricsStore ()
+@property(nonatomic) BOOL hasStoredAppearanceScale;
 @end
 
 @implementation NMMetricsStore
@@ -224,6 +246,11 @@ static BOOL NM096ValidPrefs(NSDictionary *b) {
   if (!NM096Dict(loaded[@"migration"]))
     loaded[@"migration"] = [NSMutableDictionary dictionary];
 
+  // CONTRACT_096 §13.2：判断侧车 prefs 块是否真的存有合法 appearance_scale。
+  // 必须在按块降级之前取快照；默认根（首次创建）与坏块降级都不算「有值」，
+  // 否则会挡住旧 NSUserDefaults 的一次性迁移回退。
+  const BOOL storedAppearanceScale = !created && NM096ValidPrefs(loaded[@"prefs"]);
+
   // JSON 解码得到不可变字典；统一转为可变，避免后续原地修改崩溃。
   for (NSString *key in @[ @"migration", @"prefs", @"encourager", @"medals", @"curve" ]) {
     if ([loaded[key] isKindOfClass:NSDictionary.class] &&
@@ -248,6 +275,7 @@ static BOOL NM096ValidPrefs(NSDictionary *b) {
   if (!NM096ValidCurve(loaded[@"curve"]))
     loaded[@"curve"] = [NM096DefaultCurve() mutableCopy];
   self.root = loaded;
+  self.hasStoredAppearanceScale = storedAppearanceScale;
   // 清理残留 .tmp（崩溃恢复）。
   [NSFileManager.defaultManager removeItemAtPath:[[self filePath] stringByAppendingString:@".tmp"]
                                             error:nil];

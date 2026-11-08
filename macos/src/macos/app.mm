@@ -232,10 +232,10 @@ static NSString *const kTotal = @"total";
 static NSString *const kDailyTotals = @"dailyTotals";
 static NSString *const kSelectedScene = @"selectedScene";
 static NSString *const kSelectedAppearance = @"selectedAppearanceId";
-// CONTRACT_096 §3/§4.2: appearance_scale defaults to 1.0 and clamps to
-// 0.6..1.8. It is namespaced so the 0.9.5 keyspace stays untouched; when the
-// metrics-096.json sidecar lands this value migrates into prefs.appearance_scale.
-static NSString *const kAppearanceScale = @"niuma.gongde.v096.prefs.appearance_scale";
+// CONTRACT_096 §13.2: prefs.appearance_scale lives in metrics-096.json. This
+// namespaced NSUserDefaults key is the pre-sidecar F1 location and is read-only
+// migration fallback; new writes never touch it (no dual-write).
+static NSString *const kLegacyAppearanceScale = @"niuma.gongde.v096.prefs.appearance_scale";
 // Keep countdown preferences and snapshots independent of merit persistence.
 static NSString *const kOffworkEnabled = @"offwork.enabled";
 static NSString *const kOffworkHour = @"offwork.hour";
@@ -603,6 +603,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, strong) NSWindow *appearanceScaleWindow;
 @property(nonatomic, strong) NSSlider *appearanceScaleSlider;
 @property(nonatomic, strong) NSTextField *appearanceScaleValueLabel;
+@property(nonatomic, strong) NSTimer *appearanceScaleSaveTimer;
 @property(nonatomic) BOOL offworkIsOvertime;
 @property(nonatomic, copy) NSString *offworkDayKey;
 @property(nonatomic, copy) NSString *offworkDisplayLabel;
@@ -749,6 +750,9 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (CGFloat)maxUiScaleForScreen;
 - (void)resizeAppearanceWindow;
 - (void)applyAppearanceScale:(CGFloat)scale persist:(BOOL)persist;
+- (void)loadAppearanceScaleFromSidecar;
+- (void)storeAppearanceScale;
+- (void)flushAppearanceScale;
 - (void)updateAppearanceScaleLabels;
 - (void)showAppearanceScaleSettings:(id)sender;
 - (void)appearanceScaleSliderChanged:(id)sender;
@@ -2401,7 +2405,9 @@ static NSString *NMMedalIcon(int tier) {
     self.selectedAppearanceId = kBuiltinWoodfishId;
   }
   self.selectedScene = NMSceneForBuiltinId(self.selectedAppearanceId);
-  id storedScale = [defaults objectForKey:kAppearanceScale];
+  // Legacy fallback only; -loadAppearanceScaleFromSidecar overrides this from
+  // the sidecar once it is loaded (CONTRACT_096 §13.2).
+  id storedScale = [defaults objectForKey:kLegacyAppearanceScale];
   CGFloat appearanceScale = storedScale ? [storedScale doubleValue] : kDefaultAppearanceScale;
   if (!std::isfinite(appearanceScale)) appearanceScale = kDefaultAppearanceScale;
   self.appearanceScale = std::clamp(appearanceScale, kMinAppearanceScale, kMaxAppearanceScale);
@@ -2480,9 +2486,56 @@ static NSString *NMMedalIcon(int tier) {
   if (!std::isfinite(scale)) scale = kDefaultAppearanceScale;
   scale = std::clamp(scale, kMinAppearanceScale, kMaxAppearanceScale);
   self.appearanceScale = scale;
-  if (persist) [MeritPreferences() setObject:@(scale) forKey:kAppearanceScale];
+  if (persist) [self storeAppearanceScale];
   [self updateAppearanceScaleLabels];
   [self resizeAppearanceWindow];
+}
+
+// F1: sidecar prefs.appearance_scale is authoritative (CONTRACT_096 §13.2).
+// The old namespaced NSUserDefaults key is only a one-time migration fallback.
+- (void)loadAppearanceScaleFromSidecar {
+  if (!self.metrics) return;
+  NSMutableDictionary *prefs = [self.metrics prefs];
+  const BOOL stored = self.metrics.hasStoredAppearanceScale;
+  id legacyValue = stored ? nil : [MeritPreferences() objectForKey:kLegacyAppearanceScale];
+  const double resolved = NM096ResolveAppearanceScale(stored, prefs[@"appearance_scale"],
+                                                      legacyValue);
+  self.appearanceScale = std::clamp((CGFloat)resolved, kMinAppearanceScale,
+                                    kMaxAppearanceScale);
+  if (stored) return;
+  // One-time seed: migrate the legacy value (or persist the default) so the
+  // sidecar owns this preference from now on. Never dual-write the old key.
+  prefs[@"appearance_scale"] = @(self.appearanceScale);
+  [self.metrics save];
+}
+
+// Slider/reset changes update prefs in memory immediately and coalesce disk
+// writes: the atomic sidecar writer runs at most once per 0.25s instead of on
+// every continuous-drag tick.
+- (void)storeAppearanceScale {
+  if (!self.metrics) return;
+  [self.metrics prefs][@"appearance_scale"] = @(self.appearanceScale);
+  [self.appearanceScaleSaveTimer invalidate];
+  __weak MeritController *weakSelf = self;
+  NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:0.25 repeats:NO
+                                                    block:^(NSTimer *fireTimer) {
+    (void)fireTimer;
+    MeritController *strongSelf = weakSelf;
+    if (!strongSelf) return;
+    strongSelf.appearanceScaleSaveTimer = nil;
+    [strongSelf flushAppearanceScale];
+  }];
+  self.appearanceScaleSaveTimer = timer;
+  [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
+  [NSRunLoop.mainRunLoop addTimer:timer forMode:NSModalPanelRunLoopMode];
+}
+
+- (void)flushAppearanceScale {
+  [self.appearanceScaleSaveTimer invalidate];
+  self.appearanceScaleSaveTimer = nil;
+  if (!self.metrics) return;
+  [self.metrics prefs][@"appearance_scale"] = @(self.appearanceScale);
+  [self.metrics save];
 }
 
 - (void)appearanceScaleSliderChanged:(id)sender {
@@ -2805,6 +2858,9 @@ static NSString *NMMedalIcon(int tier) {
       // 内存中镜像当前推导值；持久化沿用既有保存路径（首次启动的补授保存会带出），
       // 不为此增加启动期磁盘写入。
       [self.metrics prefs][@"ui_language"] = CurrentUiLanguageTag();
+      // CONTRACT_096 §13.2：F1 形象缩放以侧车 prefs.appearance_scale 为准；
+      // 侧车无值时读旧 NSUserDefaults 键作一次性迁移回退。
+      [self loadAppearanceScaleFromSidecar];
       [self loadEncouragerState];
       [self loadCurveState];
       [self loadMedalsState];
@@ -3162,6 +3218,8 @@ static NSString *NMMedalIcon(int tier) {
   [self saveState];
   [self flushCurve];
   if (_medalDirty) [self saveMedals];
+  [self.appearanceScaleSaveTimer invalidate];
+  self.appearanceScaleSaveTimer = nil;
   [self saveMetrics];
   [self.saveTimer invalidate]; self.saveTimer=nil;
   [self.dayTimer invalidate];
@@ -3618,9 +3676,8 @@ static NSString *NMMedalIcon(int tier) {
   if (notification.object == self.offworkSettingsWindow) return;
   if (notification.object == self.encouragerSettingsWindow) return;
   if (notification.object == self.appearanceScaleWindow) {
-    // The slider already persisted each change; flush so the choice survives restart.
-    [MeritPreferences() setObject:@(self.appearanceScale) forKey:kAppearanceScale];
-    if (!gIsolatedAcceptance) [NSUserDefaults.standardUserDefaults synchronize];
+    // Slider writes are coalesced; flush so the sidecar value survives restart.
+    [self flushAppearanceScale];
     return;
   }
   if (notification.object != self.countStatusWindow) return;
