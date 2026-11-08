@@ -9,6 +9,7 @@
 #import "thumbnail_grid.mm"
 #include "../offwork_clock.h"
 #include "../calendar_month_range.h"
+#include "../work_encourager.h"
 #include "../client/core/visibility_state.h"
 #include "../reminder_activity.h"
 #include "../reminder_geometry.h"
@@ -33,6 +34,7 @@
 #import "input_runtime.mm"
 #import "ui_theme.h"
 #import "installation_paths.h"
+#import "metrics_store.h"
 
 // Explicit acceptance launches never consult the user's product preferences.
 // The pack root must be an empty, private directory supplied by the runner;
@@ -234,6 +236,8 @@ static NSString *const kOffworkHour = @"offwork.hour";
 static NSString *const kOffworkMinute = @"offwork.minute";
 static NSString *const kOffworkDailySnapshots = @"offwork.dailySnapshots";
 static constexpr CGFloat kOffworkRegionHeight = 96.0;
+// F2 上班鼓励器在桌面组件底部叠加一个独立区域（今日已赚 + 进度条）。
+static constexpr CGFloat kEncouragerRegionHeight = 84.0;
 static constexpr CGFloat kCalendarLeft = 24.0;
 static constexpr CGFloat kCalendarTop = 218.0;
 static constexpr CGFloat kCalendarCellWidth = 96.0;
@@ -251,6 +255,30 @@ static BOOL IsChineseUI(void) {
 
 static NSString *UiText(NSString *chinese, NSString *english) {
   return IsChineseUI() ? chinese : english;
+}
+
+// CONTRACT_096 §10: 规范语言标签（zh-Hans / zh-Hant / ja / en），无法识别回落 zh-Hans。
+// 与 IsChineseUI 的 zh/en 判定保持一致，仅补充繁中与日语区分，供货币默认使用。
+static NSString *CurrentUiLanguageTag(void) {
+  NSString *override = NSProcessInfo.processInfo.environment[@"NIUMA_UI_LANGUAGE"];
+  if ([override isEqualToString:@"zh"]) return @"zh-Hans";
+  if ([override isEqualToString:@"en"]) return @"en";
+  NSString *language = NSLocale.preferredLanguages.firstObject.lowercaseString;
+  if (language.length == 0) return @"zh-Hans";
+  if ([language hasPrefix:@"zh"]) {
+    if ([language containsString:@"hant"] || [language containsString:@"-tw"] ||
+        [language containsString:@"-hk"] || [language containsString:@"-mo"])
+      return @"zh-Hant";
+    return @"zh-Hans";
+  }
+  if ([language hasPrefix:@"ja"]) return @"ja";
+  if ([language hasPrefix:@"en"]) return @"en";
+  return @"zh-Hans";
+}
+
+static niuma::encourager::CurrencyInfo DefaultCurrencyForCurrentLanguage(void) {
+  return niuma::encourager::CurrencyForLanguage(
+      std::string(CurrentUiLanguageTag().UTF8String ?: "zh-Hans"));
 }
 
 static NMUiAlert *NMPermissionIntroAlert(NSString *applicationName) {
@@ -324,7 +352,56 @@ typedef NS_ENUM(NSInteger, MeritScene) {
   MeritSceneLuckyCat = 1,
   MeritSceneSeaLionBellyPat = 2,
   MeritSceneHamsterWheel = 3,
+  MeritSceneEncourager = 4,  // F2: 上班鼓励器专属内置场景
 };
+
+static NSString *const kBuiltinWoodfishId = @"builtin.woodfish";
+static NSString *const kBuiltinEncouragerId = @"builtin.encourager";
+
+static BOOL NMIsKnownBuiltinId(NSString *identifier) {
+  return [identifier isEqualToString:kBuiltinWoodfishId] ||
+         [identifier isEqualToString:kBuiltinEncouragerId];
+}
+static MeritScene NMSceneForBuiltinId(NSString *identifier) {
+  return [identifier isEqualToString:kBuiltinEncouragerId] ? MeritSceneEncourager
+                                                            : MeritSceneWoodfish;
+}
+
+// F2: a small built-in "salary" illustration so the encourager is a real scene
+// that can be selected alongside other appearances. Drawn once, never per frame.
+static NSImage *NMEncouragerArtwork(void) {
+  const CGFloat w = 240, h = 170;
+  NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(w, h)];
+  [image lockFocus];
+  [NSGraphicsContext saveGraphicsState];
+  NSRect card = NSMakeRect(30, 14, 180, 132);
+  NSBezierPath *cardPath = [NSBezierPath bezierPathWithRoundedRect:card xRadius:18 yRadius:18];
+  [[NSColor colorWithCalibratedRed:.99 green:.96 blue:.88 alpha:1] setFill];
+  [cardPath fill];
+  [[NSColor colorWithCalibratedRed:.78 green:.39 blue:.12 alpha:1] setStroke];
+  cardPath.lineWidth = 3; [cardPath stroke];
+  // 工牌夹
+  NSRect ring = NSMakeRect(96, 132, 48, 14);
+  [[NSColor colorWithCalibratedRed:.55 green:.55 blue:.58 alpha:1] setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:ring xRadius:6 yRadius:6] fill];
+  // 大号货币符号
+  NSDictionary *symAttrs = @{
+    NSFontAttributeName : [NSFont systemFontOfSize:64 weight:NSFontWeightBold],
+    NSForegroundColorAttributeName : [NSColor colorWithCalibratedRed:.78 green:.39 blue:.12 alpha:1],
+  };
+  NSString *symbol = @"¥";
+  NSSize symSize = [symbol sizeWithAttributes:symAttrs];
+  [symbol drawAtPoint:NSMakePoint(NSMidX(card) - symSize.width / 2,
+                                  36 - symSize.height / 2 + 54)
+       withAttributes:symAttrs];
+  // 两条“工资条”
+  [[NSColor colorWithCalibratedRed:.78 green:.70 blue:.55 alpha:1] setFill];
+  NSRectFill(NSMakeRect(52, 62, 136, 6));
+  NSRectFill(NSMakeRect(52, 48, 96, 6));
+  [NSGraphicsContext restoreGraphicsState];
+  [image unlockFocus];
+  return image;
+}
 
 @class MeritController;
 @class MeritCalendarView;
@@ -351,6 +428,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, strong) NSImage *hamsterBaseImage;
 @property(nonatomic, strong) NSImage *hamsterWheelImage;
 @property(nonatomic, strong) NSImage *hamsterActorImage;
+@property(nonatomic, strong) NSImage *encouragerImage;  // F2 synthesized salary scene
 @property(nonatomic, strong) NMAppearancePack *appearancePack;
 @property(nonatomic) MeritScene scene;
 @property(nonatomic) BOOL previewOnly;
@@ -400,7 +478,29 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic) BOOL offworkDirty;
 @property(nonatomic) BOOL offworkHasSnapshot;
 @property(nonatomic) BOOL offworkSuspended;
-@property(nonatomic) BOOL offworkLayoutExpanded;
+@property(nonatomic) CGFloat regionLayoutHeight;  // 当前已应用的底部叠加区高度
+// F2 上班鼓励器
+@property(nonatomic, strong) NMMetricsStore *metrics;
+@property(nonatomic, strong) NSTimer *encouragerTimer;
+@property(nonatomic) BOOL encouragerEnabled;
+@property(nonatomic) unsigned long long encouragerDailyWageMinor;
+@property(nonatomic, copy) NSString *encouragerCurrency;
+@property(nonatomic) BOOL encouragerCurrencyOverride;
+@property(nonatomic) NSInteger encouragerStartMinute;
+@property(nonatomic) NSInteger encouragerEndMinute;
+@property(nonatomic) BOOL encouragerActive;  // enabled && wage>0 && 合法时段
+@property(nonatomic, copy) NSString *encouragerDisplayLabel;
+@property(nonatomic, copy) NSString *encouragerDisplayAmount;
+@property(nonatomic) double encouragerProgress;
+@property(nonatomic, strong) NSWindow *encouragerSettingsWindow;
+@property(nonatomic, strong) NSButton *encouragerEnableControl;
+@property(nonatomic, strong) NSTextField *encouragerWageField;
+@property(nonatomic, strong) NSButton *encouragerCurrencyOverrideControl;
+@property(nonatomic, strong) NSPopUpButton *encouragerCurrencyControl;
+@property(nonatomic, strong) NSPopUpButton *encouragerStartHourControl;
+@property(nonatomic, strong) NSPopUpButton *encouragerStartMinuteControl;
+@property(nonatomic, strong) NSPopUpButton *encouragerEndHourControl;
+@property(nonatomic, strong) NSPopUpButton *encouragerEndMinuteControl;
 // F1: user-selectable appearance multiplier (1.0 = 100%), applied to the whole
 // desktop widget. uiScale is the effective design->point scale (base * factor,
 // capped by the visible screen area).
@@ -560,6 +660,18 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)appearanceScaleSliderChanged:(id)sender;
 - (void)resetAppearanceScale:(id)sender;
 - (void)closeAppearanceScaleSettings:(id)sender;
+// F2 上班鼓励器
+- (void)loadEncouragerState;
+- (void)startEncouragerTimer;
+- (void)encouragerTick:(NSTimer *)timer;
+- (void)refreshEncouragerDisplay;
+- (void)showEncouragerSettings:(id)sender;
+- (void)encouragerCurrencyOverrideChanged:(id)sender;
+- (void)saveEncouragerSettings:(id)sender;
+- (void)cancelEncouragerSettings:(id)sender;
+- (CGFloat)desiredExtraRegionHeight;
+- (void)updateRegionLayout;
+- (void)saveMetrics;
 @end
 
 @implementation MeritView
@@ -600,6 +712,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     self.seaLionFlipperImage = images[3];
     self.hamsterBaseImage = LoadHamsterSprite(@"hamster-habitat");
     self.hamsterActorImage = LoadHamsterSprite(@"hamster-pet");
+    self.encouragerImage = NMEncouragerArtwork();
   }
   return self;
 }
@@ -660,6 +773,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   if (self.scene==MeritSceneLuckyCat) return @{@"base":self.luckyCatBaseImage,@"actor":self.luckyCatActorImage};
   if (self.scene==MeritSceneSeaLionBellyPat) return @{@"base":self.seaLionBodyImage,@"actor":self.seaLionFlipperImage};
   if (self.scene==MeritSceneHamsterWheel) return @{@"base":self.hamsterBaseImage ?: [NSImage new],@"actor":self.hamsterActorImage ?: [NSImage new]};
+  if (self.scene==MeritSceneEncourager) return @{@"base":self.encouragerImage ?: [NSImage new]};
   NSImage *shadow=[[NSImage alloc] initWithSize:NSMakeSize(160,16)];
   [shadow lockFocus]; [[NSColor colorWithWhite:0 alpha:.25] setFill];
   [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(0,0,160,16)] fill]; [shadow unlockFocus];
@@ -687,6 +801,8 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     return @[layer(@"base",@[@35,@0,@170,@170],@[@0,@0],still),
       layer(@"actor",@[@41,@15,@154,@154],@[@(88.0/154),@(41.0/154)],@[frame(0,0,0,0,1),peak,frame(1,0,0,0,1)])];
   }
+  if (self.scene==MeritSceneEncourager)
+    return @[layer(@"base",@[@0,@0,@240,@170],@[@0,@0],still)];
   // The two mallet slices preserve the undistorted head and extended shaft.
   double sw=MAX(145,self.malletImage.size.width);
   NSMutableDictionary *shaft=[layer(@"mallet",@[@(120+.88*(417-260-120)),@(.88*(180-26)),@(.88*266),@(.88*54)],
@@ -712,10 +828,16 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     [self.renderer installLayers:[self sceneDescriptors] images:[self sceneImages]];
     self.renderedIdentity=identity; self.renderedScene=self.scene;
   }
-  CGFloat offset=(!self.previewOnly && self.controller.offworkEnabled) ? kOffworkRegionHeight : 0;
-  [self.renderer layoutWithScale:self.controller.uiScale backing:self.window.backingScaleFactor ?: 2 offset:offset preview:self.previewOnly];
+  CGFloat offworkHeight=(!self.previewOnly && self.controller.offworkEnabled) ? kOffworkRegionHeight : 0;
+  CGFloat encouragerHeight=(!self.previewOnly && self.controller.encouragerActive) ? kEncouragerRegionHeight : 0;
+  [self.renderer layoutWithScale:self.controller.uiScale backing:self.window.backingScaleFactor ?: 2
+                   offworkHeight:offworkHeight encouragerHeight:encouragerHeight preview:self.previewOnly];
   [self.renderer setCounter:[NSString stringWithFormat:@"%lld",self.controller.todayTotal]
                       label:self.controller.offworkDisplayLabel duration:self.controller.offworkDisplayDuration];
+  [self.renderer setEncouragerLabel:self.controller.encouragerDisplayLabel
+                             amount:self.controller.encouragerDisplayAmount
+                           progress:self.controller.encouragerProgress
+                            visible:encouragerHeight>0];
   if(self.pendingAnimationDuration>0) {
     if(CACurrentMediaTime()-self.pendingAnimationStart<self.pendingAnimationDuration)
       [self.renderer play:self.pendingAnimationDuration atTime:self.pendingAnimationStart];
@@ -977,9 +1099,19 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   if (durable && !gIsolatedAcceptance) [NSUserDefaults.standardUserDefaults synchronize];
 }
 
-- (void)updateOffworkWindowLayout {
-  if (!self.window || self.offworkLayoutExpanded == self.offworkEnabled) return;
-  CGFloat delta = kOffworkRegionHeight * self.uiScale * (self.offworkEnabled ? 1 : -1);
+- (CGFloat)desiredExtraRegionHeight {
+  CGFloat extra = 0;
+  if (self.offworkEnabled) extra += kOffworkRegionHeight;
+  if (self.encouragerActive) extra += kEncouragerRegionHeight;
+  return extra;
+}
+
+// 统一处理底部叠加区（下班倒计时 + 上班鼓励器）导致的主窗口高度变化。
+- (void)updateRegionLayout {
+  if (!self.window) return;
+  CGFloat desired = [self desiredExtraRegionHeight];
+  if (self.regionLayoutHeight == desired) return;
+  CGFloat delta = (desired - self.regionLayoutHeight) * self.uiScale;
   NSRect frame = self.window.frame;
   frame.origin.y -= delta;
   frame.size.height += delta;
@@ -989,7 +1121,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     frame.origin.x = MAX(NSMinX(visible), MIN(frame.origin.x, NSMaxX(visible) - NSWidth(frame)));
     frame.origin.y = MAX(NSMinY(visible), MIN(frame.origin.y, NSMaxY(visible) - NSHeight(frame)));
   }
-  self.offworkLayoutExpanded = self.offworkEnabled;
+  self.regionLayoutHeight = desired;
   [self.window setFrame:frame display:NO];
   [self.view setFrameSize:frame.size];
   [self.view setNeedsDisplay:YES];
@@ -1068,7 +1200,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)startOffworkTimer {
   [self.offworkTimer invalidate];
   self.offworkTimer = nil;
-  [self updateOffworkWindowLayout];
+  [self updateRegionLayout];
   if (!self.offworkEnabled) {
     self.offworkHasSnapshot = NO;
     self.view.accessibilityLabel = nil;
@@ -1273,6 +1405,328 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   [alert runModal];
 }
 
+// ---- F2 上班鼓励器 ----
+
+// 解析用户输入的“主单位”金额（如 200.50）为最小货币单位整数，全程整数、不用浮点。
+static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long long *out) {
+  if (!out) return NO;
+  if (exponent < 0) exponent = 0;
+  if (exponent > 6) exponent = 6;
+  NSString *trimmed = [text stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (trimmed.length == 0) return NO;
+  NSMutableString *digits = [NSMutableString string];
+  NSInteger dotCount = 0;
+  for (NSUInteger i = 0; i < trimmed.length; ++i) {
+    unichar c = [trimmed characterAtIndex:i];
+    if (c >= '0' && c <= '9') {
+      [digits appendFormat:@"%C", c];
+    } else if (c == '.' || c == ',') {
+      // 允许千分位逗号与一个小数点；逗号忽略。
+      if (c == '.') {
+        if (++dotCount > 1) return NO;
+        [digits appendString:@"."];
+      }
+    } else {
+      return NO;
+    }
+  }
+  if (digits.length == 0) return NO;
+  NSArray<NSString *> *parts = [digits componentsSeparatedByString:@"."];
+  NSString *whole = parts.firstObject ?: @"0";
+  NSString *frac = parts.count > 1 ? parts[1] : @"";
+  if (whole.length > 15) return NO;  // 防止溢出
+  unsigned long long wholeValue = 0;
+  for (NSUInteger i = 0; i < whole.length; ++i) {
+    unichar c = [whole characterAtIndex:i];
+    if (c < '0' || c > '9') return NO;
+    wholeValue = wholeValue * 10 + (unsigned long long)(c - '0');
+  }
+  // 取 exponent 位小数，多余位四舍五入（half-up）。
+  unsigned long long fracValue = 0;
+  BOOL roundUp = NO;
+  for (int i = 0; i < exponent; ++i) {
+    unsigned long long d = 0;
+    if (i < (int)frac.length) {
+      unichar c = [frac characterAtIndex:(NSUInteger)i];
+      if (c < '0' || c > '9') return NO;
+      d = (unsigned long long)(c - '0');
+    }
+    fracValue = fracValue * 10 + d;
+  }
+  if ((int)frac.length > exponent) {
+    unichar next = [frac characterAtIndex:(NSUInteger)exponent];
+    if (next >= '5' && next <= '9') roundUp = YES;
+  }
+  unsigned long long unit = 1;
+  for (int i = 0; i < exponent; ++i) unit *= 10;
+  unsigned long long result = wholeValue * unit + fracValue;
+  if (roundUp) result += 1;
+  *out = result;
+  return YES;
+}
+
+- (void)loadEncouragerState {
+  if (!self.metrics) return;
+  NSDictionary *block = [self.metrics encourager];
+  self.encouragerEnabled = [block[@"enabled"] boolValue];
+  self.encouragerDailyWageMinor = [block[@"daily_wage_minor"] unsignedLongLongValue];
+  self.encouragerCurrency = block[@"currency"] ?: @"CNY";
+  self.encouragerCurrencyOverride = [block[@"currency_override"] boolValue];
+  self.encouragerStartMinute = [block[@"start_minute"] integerValue];
+  self.encouragerEndMinute = [block[@"end_minute"] integerValue];
+  if (!self.encouragerCurrencyOverride) {
+    niuma::encourager::CurrencyInfo info = DefaultCurrencyForCurrentLanguage();
+    self.encouragerCurrency = [NSString stringWithUTF8String:info.code];
+  }
+  niuma::encourager::Window window{(int)self.encouragerStartMinute,
+                                   (int)self.encouragerEndMinute};
+  self.encouragerActive = self.encouragerEnabled && self.encouragerDailyWageMinor > 0 &&
+                          window.Valid();
+  [self refreshEncouragerDisplay];
+}
+
+- (void)refreshEncouragerDisplay {
+  niuma::encourager::Window window{(int)self.encouragerStartMinute,
+                                   (int)self.encouragerEndMinute};
+  std::time_t now = std::time(nullptr);
+  std::tm local = {};
+  int secondOfDay = 0;
+  if (niuma::OffworkLocalTime(now, &local)) secondOfDay = local.tm_hour * 3600 +
+      local.tm_min * 60 + local.tm_sec;
+  niuma::encourager::Status status = niuma::encourager::Evaluate(
+      self.encouragerDailyWageMinor, self.encouragerEnabled, window, secondOfDay);
+  self.encouragerActive = status.valid;
+  NSString *code = self.encouragerCurrency.length ? self.encouragerCurrency : @"CNY";
+  int exponent = niuma::encourager::ExponentForCode(std::string(code.UTF8String ?: "CNY"));
+  std::string symbol = niuma::encourager::SymbolForCode(std::string(code.UTF8String ?: "CNY"));
+  self.encouragerDisplayAmount = [NSString stringWithUTF8String:
+      niuma::encourager::FormatAmountMinor(status.earned_minor, exponent, symbol).c_str()];
+  self.encouragerDisplayLabel = UiText(@"今日已赚", @"Earned today");
+  self.encouragerProgress = status.progress;
+  if (!self.appearanceHidden) [self.view setNeedsDisplay:YES];
+}
+
+- (void)encouragerTick:(NSTimer *)timer {
+  (void)timer;
+  [self refreshEncouragerDisplay];
+}
+
+- (void)startEncouragerTimer {
+  [self.encouragerTimer invalidate];
+  self.encouragerTimer = nil;
+  [self updateRegionLayout];
+  if (!self.encouragerActive) {
+    [self refreshEncouragerDisplay];
+    return;
+  }
+  [self refreshEncouragerDisplay];
+  NSDate *firstTick = [NSDate dateWithTimeIntervalSince1970:
+      std::floor(NSDate.date.timeIntervalSince1970) + 1];
+  self.encouragerTimer = [[NSTimer alloc] initWithFireDate:firstTick interval:1
+      target:self selector:@selector(encouragerTick:) userInfo:nil repeats:YES];
+  self.encouragerTimer.tolerance = .05;
+  [NSRunLoop.mainRunLoop addTimer:self.encouragerTimer forMode:NSRunLoopCommonModes];
+  [NSRunLoop.mainRunLoop addTimer:self.encouragerTimer forMode:NSModalPanelRunLoopMode];
+}
+
+- (void)showEncouragerSettings:(id)sender {
+  (void)sender;
+  if (!self.encouragerSettingsWindow) {
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 470, 400)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+        backing:NSBackingStoreBuffered defer:NO];
+    window.title = UiText(@"上班鼓励器", @"Work Encourager");
+    window.releasedWhenClosed = NO;
+    window.delegate = self;
+    if (gIsolatedAcceptance) window.restorable = NO;
+    NSView *content = window.contentView;
+    self.encouragerEnableControl =
+        [NSButton checkboxWithTitle:UiText(@"启用上班鼓励器", @"Enable work encourager")
+            target:self action:@selector(encouragerCurrencyOverrideChanged:)];
+    self.encouragerEnableControl.frame = NSMakeRect(24, 352, 380, 26);
+    [content addSubview:self.encouragerEnableControl];
+
+    NSTextField *wageLabel = [NSTextField labelWithString:UiText(@"日薪", @"Daily wage")];
+    wageLabel.frame = NSMakeRect(24, 312, 120, 22);
+    [content addSubview:wageLabel];
+    self.encouragerWageField = [[NSTextField alloc] initWithFrame:NSMakeRect(150, 308, 160, 26)];
+    self.encouragerWageField.placeholderString = UiText(@"如 200.00", @"e.g. 200.00");
+    [content addSubview:self.encouragerWageField];
+    NSTextField *wageHint = [NSTextField labelWithString:UiText(
+        @"按上班时段平均累计；为 0 时关闭", @"Spread across the work window; 0 disables")];
+    wageHint.frame = NSMakeRect(320, 312, 128, 22);
+    wageHint.font = [NSFont systemFontOfSize:10];
+    wageHint.textColor = NMUiMuted();
+    [content addSubview:wageHint];
+
+    self.encouragerCurrencyOverrideControl =
+        [NSButton checkboxWithTitle:UiText(@"手动指定货币", @"Override currency")
+            target:self action:@selector(encouragerCurrencyOverrideChanged:)];
+    self.encouragerCurrencyOverrideControl.frame = NSMakeRect(24, 272, 180, 24);
+    [content addSubview:self.encouragerCurrencyOverrideControl];
+    self.encouragerCurrencyControl = [[NSPopUpButton alloc] initWithFrame:
+        NSMakeRect(210, 268, 150, 28) pullsDown:NO];
+    NSArray<NSString *> *codes = @[ @"CNY", @"TWD", @"JPY", @"USD", @"EUR", @"GBP" ];
+    NSArray<NSString *> *titles = @[ @"CN¥ CNY", @"NT$ TWD", @"JP¥ JPY", @"US$ USD",
+                                     @"€ EUR", @"£ GBP" ];
+    for (NSUInteger i = 0; i < codes.count; ++i) {
+      [self.encouragerCurrencyControl addItemWithTitle:titles[i]];
+      self.encouragerCurrencyControl.lastItem.representedObject = codes[i];
+    }
+    [content addSubview:self.encouragerCurrencyControl];
+
+    NSTextField *windowLabel = [NSTextField labelWithString:UiText(
+        @"上班时段（起 < 止，24 小时制）", @"Work window (start < end, 24-hour)")];
+    windowLabel.frame = NSMakeRect(24, 232, 300, 22);
+    [content addSubview:windowLabel];
+    self.encouragerStartHourControl = [[NSPopUpButton alloc] initWithFrame:
+        NSMakeRect(24, 198, 66, 28) pullsDown:NO];
+    self.encouragerStartMinuteControl = [[NSPopUpButton alloc] initWithFrame:
+        NSMakeRect(96, 198, 66, 28) pullsDown:NO];
+    for (NSInteger h = 0; h < 24; ++h)
+      [self.encouragerStartHourControl addItemWithTitle:[NSString stringWithFormat:@"%02ld", (long)h]];
+    for (NSInteger m = 0; m < 60; ++m)
+      [self.encouragerStartMinuteControl addItemWithTitle:[NSString stringWithFormat:@"%02ld", (long)m]];
+    NSTextField *dash = [NSTextField labelWithString:@"→"];
+    dash.frame = NSMakeRect(170, 203, 20, 20);
+    [content addSubview:dash];
+    self.encouragerEndHourControl = [[NSPopUpButton alloc] initWithFrame:
+        NSMakeRect(196, 198, 66, 28) pullsDown:NO];
+    self.encouragerEndMinuteControl = [[NSPopUpButton alloc] initWithFrame:
+        NSMakeRect(268, 198, 66, 28) pullsDown:NO];
+    for (NSInteger h = 0; h <= 24; ++h)
+      [self.encouragerEndHourControl addItemWithTitle:[NSString stringWithFormat:@"%02ld", (long)h]];
+    for (NSInteger m = 0; m < 60; ++m)
+      [self.encouragerEndMinuteControl addItemWithTitle:[NSString stringWithFormat:@"%02ld", (long)m]];
+    [content addSubview:self.encouragerStartHourControl];
+    [content addSubview:self.encouragerStartMinuteControl];
+    [content addSubview:self.encouragerEndHourControl];
+    [content addSubview:self.encouragerEndMinuteControl];
+
+    NSTextField *explanation = [NSTextField wrappingLabelWithString:UiText(
+        @"显示「今日已赚」与今日上班进度条：时段内按墙钟每秒累计，到止点等于日薪；时段外暂停，每日零点归零，周末同样生效。跨午夜时段本期不支持。金额仅本地保存与展示，不写入日志、分享卡或网络。",
+        @"Shows “Earned today” and a work-progress bar: accrues by the wall clock within the window, reaching the daily wage at the end; pauses outside it, resets at midnight, and applies on weekends too. Overnight windows are not supported yet. Amounts stay local and are never logged, shared, or sent.")];
+    explanation.frame = NSMakeRect(24, 92, 422, 92);
+    explanation.font = [NSFont systemFontOfSize:12];
+    explanation.textColor = NMUiMuted();
+    [content addSubview:explanation];
+
+    NSButton *cancel = [NSButton buttonWithTitle:UiText(@"取消", @"Cancel")
+        target:self action:@selector(cancelEncouragerSettings:)];
+    cancel.frame = NSMakeRect(262, 20, 88, 30);
+    cancel.keyEquivalent = @"\033";
+    [content addSubview:cancel];
+    NSButton *save = [NSButton buttonWithTitle:UiText(@"保存", @"Save")
+        target:self action:@selector(saveEncouragerSettings:)];
+    save.frame = NSMakeRect(358, 20, 88, 30);
+    save.keyEquivalent = @"\r";
+    [content addSubview:save];
+    self.encouragerSettingsWindow = window;
+    NMUiWindow(window);
+    [window center];
+  }
+  // 打开时用当前值填充，不提交。
+  self.encouragerEnableControl.state = self.encouragerEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+  int exponent = niuma::encourager::ExponentForCode(
+      std::string(self.encouragerCurrency.UTF8String ?: "CNY"));
+  self.encouragerWageField.stringValue = [NSString stringWithUTF8String:
+      niuma::encourager::FormatAmountMinor(self.encouragerDailyWageMinor, exponent, "").c_str()];
+  self.encouragerCurrencyOverrideControl.state =
+      self.encouragerCurrencyOverride ? NSControlStateValueOn : NSControlStateValueOff;
+  NSString *code = self.encouragerCurrencyOverride ? self.encouragerCurrency
+      : [NSString stringWithUTF8String:DefaultCurrencyForCurrentLanguage().code];
+  for (NSMenuItem *item in self.encouragerCurrencyControl.itemArray) {
+    if ([item.representedObject isEqualToString:code]) {
+      [self.encouragerCurrencyControl selectItem:item];
+      break;
+    }
+  }
+  [self.encouragerStartHourControl selectItemAtIndex:self.encouragerStartMinute / 60];
+  [self.encouragerStartMinuteControl selectItemAtIndex:self.encouragerStartMinute % 60];
+  [self.encouragerEndHourControl selectItemAtIndex:self.encouragerEndMinute / 60];
+  [self.encouragerEndMinuteControl selectItemAtIndex:self.encouragerEndMinute % 60];
+  [self encouragerCurrencyOverrideChanged:nil];
+  [NSApp activateIgnoringOtherApps:YES];
+  [self.encouragerSettingsWindow makeKeyAndOrderFront:nil];
+}
+
+- (void)encouragerCurrencyOverrideChanged:(id)sender {
+  (void)sender;
+  BOOL overrideOn = self.encouragerCurrencyOverrideControl.state == NSControlStateValueOn;
+  self.encouragerCurrencyControl.enabled = overrideOn;
+}
+
+- (void)cancelEncouragerSettings:(id)sender {
+  (void)sender;
+  [self.encouragerSettingsWindow close];
+}
+
+- (void)saveEncouragerSettings:(id)sender {
+  (void)sender;
+  BOOL enabled = self.encouragerEnableControl.state == NSControlStateValueOn;
+  BOOL overrideOn = self.encouragerCurrencyOverrideControl.state == NSControlStateValueOn;
+  NSString *code = overrideOn
+      ? (self.encouragerCurrencyControl.selectedItem.representedObject ?: @"CNY")
+      : [NSString stringWithUTF8String:DefaultCurrencyForCurrentLanguage().code];
+  int exponent = niuma::encourager::ExponentForCode(std::string(code.UTF8String ?: "CNY"));
+  unsigned long long wageMinor = 0;
+  if (!NMParseAmountToMinor(self.encouragerWageField.stringValue, exponent, &wageMinor)) {
+    NSAlert *alert = [[NMUiAlert alloc] init];
+    alert.messageText = UiText(@"日薪格式无效", @"Invalid Daily Wage");
+    alert.informativeText = UiText(@"请填写非负金额，例如 200 或 200.50。",
+        @"Enter a non-negative amount such as 200 or 200.50.");
+    [alert addButtonWithTitle:UiText(@"好", @"OK")];
+    [alert runModal];
+    return;
+  }
+  NSInteger startMinute = self.encouragerStartHourControl.indexOfSelectedItem * 60 +
+      self.encouragerStartMinuteControl.indexOfSelectedItem;
+  NSInteger endHour = self.encouragerEndHourControl.indexOfSelectedItem;
+  NSInteger endMinute = endHour * 60 + self.encouragerEndMinuteControl.indexOfSelectedItem;
+  if (endHour == 24 && self.encouragerEndMinuteControl.indexOfSelectedItem != 0) endMinute = -1;
+  if (startMinute < 0 || endMinute <= startMinute || endMinute > 1440) {
+    NSAlert *alert = [[NMUiAlert alloc] init];
+    alert.messageText = UiText(@"上班时段无效", @"Invalid Work Window");
+    alert.informativeText = UiText(@"开始时间必须早于结束时间（24:00 仅可作结束且分钟为 0）。跨午夜暂不支持。",
+        @"Start must be earlier than end (24:00 allowed only as end with 0 minutes). Overnight windows are not supported yet.");
+    [alert addButtonWithTitle:UiText(@"好", @"OK")];
+    [alert runModal];
+    return;
+  }
+
+  self.encouragerEnabled = enabled;
+  self.encouragerDailyWageMinor = wageMinor;
+  self.encouragerCurrency = code;
+  self.encouragerCurrencyOverride = overrideOn;
+  self.encouragerStartMinute = startMinute;
+  self.encouragerEndMinute = endMinute;
+
+  if (self.metrics) {
+    NSMutableDictionary *block = [self.metrics encourager];
+    block[@"enabled"] = @(enabled);
+    block[@"daily_wage_minor"] = @(wageMinor);
+    block[@"currency"] = code;
+    block[@"currency_override"] = @(overrideOn);
+    block[@"start_minute"] = @(startMinute);
+    block[@"end_minute"] = @(endMinute);
+  }
+  niuma::encourager::Window window{(int)startMinute, (int)endMinute};
+  self.encouragerActive = enabled && wageMinor > 0 && window.Valid();
+  [self refreshEncouragerDisplay];
+  [self startEncouragerTimer];
+  [self saveMetrics];
+  [self.encouragerSettingsWindow close];
+}
+
+- (void)saveMetrics {
+  if (!self.metrics) return;
+  NSMutableDictionary *prefs = [self.metrics prefs];
+  prefs[@"ui_language"] = CurrentUiLanguageTag();
+  prefs[@"appearance_scale"] = @(self.appearanceScale);
+  [self.metrics save];
+}
+
 - (void)loadState {
   id<NMMeritPreferences> defaults = MeritPreferences();
   self.total = [defaults integerForKey:kTotal];
@@ -1286,13 +1740,13 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   self.smoothedInputInterval = kDefaultStrikeDuration;
   self.activeStrikeDuration = kDefaultStrikeDuration;
   self.inputMonitoringAuthorized = NO;
-  self.selectedScene = MeritSceneWoodfish;
   self.selectedAppearanceId = [defaults stringForKey:kSelectedAppearance];
   if (!self.selectedAppearanceId.length ||
       ([self.selectedAppearanceId hasPrefix:@"builtin."] &&
-       ![self.selectedAppearanceId isEqualToString:@"builtin.woodfish"])) {
-    self.selectedAppearanceId = @"builtin.woodfish";
+       !NMIsKnownBuiltinId(self.selectedAppearanceId))) {
+    self.selectedAppearanceId = kBuiltinWoodfishId;
   }
+  self.selectedScene = NMSceneForBuiltinId(self.selectedAppearanceId);
   id storedScale = [defaults objectForKey:kAppearanceScale];
   CGFloat appearanceScale = storedScale ? [storedScale doubleValue] : kDefaultAppearanceScale;
   if (!std::isfinite(appearanceScale)) appearanceScale = kDefaultAppearanceScale;
@@ -1315,7 +1769,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   if (!screen) return CGFLOAT_MAX;
   NSRect visible = screen.visibleFrame;
   const CGFloat margin = 8.0;
-  const CGFloat extra = self.offworkEnabled ? kOffworkRegionHeight : 0.0;
+  const CGFloat extra = [self desiredExtraRegionHeight];
   const CGFloat byWidth = (NSWidth(visible) - margin * 2) / kWindowWidth;
   const CGFloat byHeight = (NSHeight(visible) - margin * 2) / (kWindowHeight + extra);
   return MAX(kBaseUiScale * kMinAppearanceScale, MIN(byWidth, byHeight));
@@ -1329,7 +1783,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)resizeAppearanceWindow {
   if (!self.window) { [self.view setNeedsDisplay:YES]; return; }
   const CGFloat ui = self.uiScale;
-  const CGFloat extra = self.offworkEnabled ? kOffworkRegionHeight : 0.0;
+  const CGFloat extra = [self desiredExtraRegionHeight];
   CGFloat width = std::round(kWindowWidth * ui);
   CGFloat height = std::round((kWindowHeight + extra) * ui);
   NSRect old = self.window.frame;
@@ -1347,7 +1801,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     frame.origin.x = MIN(MAX(NSMinX(visible), frame.origin.x), NSMaxX(visible) - NSWidth(frame));
     frame.origin.y = MIN(MAX(NSMinY(visible), frame.origin.y), NSMaxY(visible) - NSHeight(frame));
   }
-  self.offworkLayoutExpanded = self.offworkEnabled;
+  self.regionLayoutHeight = extra;
   [self.window setFrame:frame display:YES];
   [self.view setFrameSize:frame.size];
   [self.view setNeedsDisplay:YES];
@@ -1680,6 +2134,17 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
   [self loadState];
   [self loadOffworkState];
+  {
+    NSString *support = gIsolatedAcceptance ? gAcceptanceRootPath :
+        NSSearchPathForDirectoriesInDomains(
+            NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+    if (support.length > 0) {
+      NSString *metricsDir = [support stringByAppendingPathComponent:@"NiuMaMerit"];
+      self.metrics = [NMMetricsStore storeInDirectory:metricsDir];
+      [self.metrics load];
+      [self loadEncouragerState];
+    }
+  }
   if (!gIsolatedAcceptance || gAcceptanceRootPath.length) {
     NSString *support = gIsolatedAcceptance ? gAcceptanceRootPath :
         NSSearchPathForDirectoriesInDomains(
@@ -1712,7 +2177,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   NSString *restoredAppearanceId = [self.selectedAppearanceId copy];
   [self reloadAppearancePacks];
   BOOL previousAppearanceMissing = restoredAppearanceId.length &&
-      ![restoredAppearanceId isEqualToString:@"builtin.woodfish"] &&
+      !NMIsKnownBuiltinId(restoredAppearanceId) &&
       ![self appearancePackWithId:restoredAppearanceId];
   [self applyAppearanceId:self.selectedAppearanceId];
   self.window = [[NSWindow alloc] initWithContentRect:self.view.bounds
@@ -1802,6 +2267,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   [NSDistributedNotificationCenter.defaultCenter addObserver:self selector:@selector(reminderDidResume:)
       name:@"com.apple.screenIsUnlocked" object:nil suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
   [self startOffworkTimer];
+  [self startEncouragerTimer];
   [self.window orderFrontRegardless];
   [self refreshAppearanceVisibility:nil];
   if (previousAppearanceMissing || self.appearanceLoadError) {
@@ -2024,7 +2490,10 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   [self flushOffwork:YES];
   [self.offworkTimer invalidate];
   self.offworkTimer = nil;
+  [self.encouragerTimer invalidate];
+  self.encouragerTimer = nil;
   [self saveState];
+  [self saveMetrics];
   [self.saveTimer invalidate]; self.saveTimer=nil;
   [self.dayTimer invalidate];
   [self.reminderTimer invalidate];
@@ -2477,6 +2946,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)windowWillClose:(NSNotification *)notification {
   // Closing the settings window discards its controls, never commits their values.
   if (notification.object == self.offworkSettingsWindow) return;
+  if (notification.object == self.encouragerSettingsWindow) return;
   if (notification.object == self.appearanceScaleWindow) {
     // The slider already persisted each change; flush so the choice survives restart.
     [MeritPreferences() setObject:@(self.appearanceScale) forKey:kAppearanceScale];
@@ -2864,6 +3334,11 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
              action:@selector(showOffworkSettings:) keyEquivalent:@""];
   offwork.target = self;
   offwork.state = self.offworkEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+  NSMenuItem *encourager = [[NSMenuItem alloc]
+      initWithTitle:UiText(@"上班鼓励器…", @"Work Encourager…")
+             action:@selector(showEncouragerSettings:) keyEquivalent:@""];
+  encourager.target = self;
+  encourager.state = self.encouragerActive ? NSControlStateValueOn : NSControlStateValueOff;
   NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:UiText(@"退出", @"Quit")
                                                 action:@selector(terminate:)
                                          keyEquivalent:@""];
@@ -2882,12 +3357,12 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
       action:@selector(toggleAutoHideFullscreen:) keyEquivalent:@""];
   autoHide.target = self;
   autoHide.state = _visibility.autoHideFullscreen ? NSControlStateValueOn : NSControlStateValueOff;
-  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, offwork, launchAtLogin, about, quit];
+  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, offwork, encourager, launchAtLogin, about, quit];
   for (NSMenuItem *item in entries) [menu addItem:item];
   NSFont *menuFont = [NSFont systemFontOfSize:14];
   menu.font = menuFont;
   if (@available(macOS 11.0, *)) {
-    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"clock", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
+    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"clock", @"yensign.circle", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
     for (NSUInteger index = 0; index < entries.count; ++index) {
       NSImage *image = [NSImage imageWithSystemSymbolName:symbols[index] accessibilityDescription:nil];
       image.size = NSMakeSize(16, 16); ((NSMenuItem *)entries[index]).image = image;
@@ -3050,8 +3525,10 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   self.pendingScenePack=[self appearancePackWithId:identifier];
   if (self.pendingScenePack) { [self pumpSceneLoad]; return; }
   [self stopAnimation];
-  self.selectedScene=MeritSceneWoodfish; self.view.scene=self.selectedScene;
-  self.view.appearancePack=nil; self.selectedAppearanceId=@"builtin.woodfish";
+  if (!NMIsKnownBuiltinId(identifier)) identifier = kBuiltinWoodfishId;
+  self.selectedScene=NMSceneForBuiltinId(identifier);
+  self.view.scene=self.selectedScene;
+  self.view.appearancePack=nil; self.selectedAppearanceId=identifier;
   [MeritPreferences() setInteger:self.selectedScene forKey:kSelectedScene];
   [MeritPreferences() setObject:self.selectedAppearanceId forKey:kSelectedAppearance];
   [self.view syncPresentation];
@@ -3093,6 +3570,9 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   [items addObject:@{@"id": @"builtin.woodfish",
                      @"title": UiText(@"默认木鱼", @"Woodfish"),
                      @"scene": @(MeritSceneWoodfish)}];
+  [items addObject:@{@"id": kBuiltinEncouragerId,
+                     @"title": UiText(@"上班鼓励器", @"Work Encourager"),
+                     @"scene": @(MeritSceneEncourager)}];
   for (NMAppearancePack *pack in self.installedAppearancePacks) {
     [items addObject:@{@"id": pack.identifier, @"title": [pack localizedName], @"pack": pack}];
   }

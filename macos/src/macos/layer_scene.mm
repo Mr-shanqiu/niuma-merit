@@ -1,4 +1,5 @@
 #import <QuartzCore/QuartzCore.h>
+#include <algorithm>
 
 // Reuse a small glyph atlas like a clock: changing a number replaces only
 // affected digit contents. No typesetting or bitmap drawing on each keypress.
@@ -69,6 +70,13 @@
 @property(nonatomic, strong) CATextLayer *feedback;
 @property(nonatomic, strong) CATextLayer *offworkLabel;
 @property(nonatomic, strong) NMNumberLayer *offworkDuration;
+@property(nonatomic, strong) CATextLayer *encouragerLabel;
+@property(nonatomic, strong) CATextLayer *encouragerAmount;
+@property(nonatomic, strong) CALayer *encouragerBarBack;
+@property(nonatomic, strong) CALayer *encouragerBarFill;
+@property(nonatomic) double encouragerProgress;
+@property(nonatomic) CGFloat layoutOffworkHeight;
+@property(nonatomic) CGFloat layoutEncouragerHeight;
 @property(nonatomic, copy) NSArray<NSDictionary *> *descriptors;
 @property(nonatomic, copy) NSArray<NSArray<CALayer *> *> *nodes;
 @property(nonatomic, copy) NSArray<NSDictionary *> *animationTemplates;
@@ -85,7 +93,12 @@
 - (instancetype)initWithRoot:(CALayer *)root;
 - (void)installLayers:(NSArray<NSDictionary *> *)layers images:(NSDictionary<NSString *,NSImage *> *)images;
 - (void)layoutWithScale:(CGFloat)scale backing:(CGFloat)backing offset:(CGFloat)offset preview:(BOOL)preview;
+- (void)layoutWithScale:(CGFloat)scale backing:(CGFloat)backing
+          offworkHeight:(CGFloat)offworkHeight encouragerHeight:(CGFloat)encouragerHeight
+                preview:(BOOL)preview;
 - (void)setCounter:(NSString *)counter label:(NSString *)label duration:(NSString *)duration;
+- (void)setEncouragerLabel:(NSString *)label amount:(NSString *)amount progress:(double)progress visible:(BOOL)visible;
+- (void)applyEncouragerBar;
 - (void)play:(NSTimeInterval)duration;
 - (void)play:(NSTimeInterval)duration atTime:(CFTimeInterval)start;
 - (void)stop;
@@ -150,7 +163,18 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     _feedbackTemplate.calculationMode=kCAAnimationDiscrete;
     _offworkLabel = NMSceneText(CGRectMake(0,55,240,28),24,NSColor.orangeColor);
     _offworkDuration = [NMNumberLayer layer];_offworkDuration.frame=CGRectMake(0,14,240,35);
-    for (CALayer *layer in @[_counter,_feedback,_offworkLabel,_offworkDuration]) [_root addSublayer:layer];
+    _encouragerLabel = NMSceneText(CGRectMake(0,0,240,22),15,NSColor.orangeColor);
+    _encouragerAmount = NMSceneText(CGRectMake(0,0,240,30),26,NSColor.orangeColor);
+    _encouragerBarBack = [CALayer layer];
+    _encouragerBarBack.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:.18].CGColor;
+    _encouragerBarBack.cornerRadius = 4;
+    _encouragerBarFill = [CALayer layer];
+    _encouragerBarFill.backgroundColor = NSColor.orangeColor.CGColor;
+    _encouragerBarFill.cornerRadius = 4;
+    [_encouragerBarBack addSublayer:_encouragerBarFill];
+    for (CALayer *layer in @[_counter,_feedback,_offworkLabel,_offworkDuration,
+                             _encouragerLabel,_encouragerAmount,_encouragerBarBack])
+      [_root addSublayer:layer];
   } return self;
 }
 - (void)installLayers:(NSArray<NSDictionary *> *)layers images:(NSDictionary<NSString *,NSImage *> *)images {
@@ -194,19 +218,50 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
   }];self.animationTemplates=templates;
 }
 - (void)layoutWithScale:(CGFloat)scale backing:(CGFloat)backing offset:(CGFloat)offset preview:(BOOL)preview {
-  if(self.layoutValid && self.layoutScale==scale && self.layoutBacking==backing && self.layoutOffset==offset && self.layoutPreview==preview) return;
-  self.layoutValid=YES;self.layoutScale=scale;self.layoutBacking=backing;self.layoutOffset=offset;self.layoutPreview=preview;
+  // Back-compat shim: treat offset as the offwork region only.
+  [self layoutWithScale:scale backing:backing offworkHeight:offset encouragerHeight:0 preview:preview];
+}
+- (void)layoutWithScale:(CGFloat)scale backing:(CGFloat)backing
+          offworkHeight:(CGFloat)offworkHeight encouragerHeight:(CGFloat)encouragerHeight
+                preview:(BOOL)preview {
+  if(self.layoutValid && self.layoutScale==scale && self.layoutBacking==backing &&
+     self.layoutOffworkHeight==offworkHeight && self.layoutEncouragerHeight==encouragerHeight &&
+     self.layoutPreview==preview) { [self applyEncouragerBar]; return; }
+  self.layoutValid=YES;self.layoutScale=scale;self.layoutBacking=backing;
+  self.layoutOffworkHeight=offworkHeight;self.layoutEncouragerHeight=encouragerHeight;
+  self.layoutPreview=preview;
+  const CGFloat bottom = offworkHeight + encouragerHeight;
   NMNoImplicit(^{
     self.root.affineTransform=CGAffineTransformMakeScale(scale,scale);
-    self.root.bounds=CGRectMake(0,0,240,250+offset);
-    self.artwork.frame=CGRectMake(0,offset,240,170);
-    self.counter.frame=CGRectMake(0,210+offset,240,40);
-    self.feedback.frame=CGRectMake(0,174+offset,240,30);
+    self.root.bounds=CGRectMake(0,0,240,250+bottom);
+    self.artwork.frame=CGRectMake(0,bottom,240,170);
+    self.counter.frame=CGRectMake(0,210+bottom,240,40);
+    self.feedback.frame=CGRectMake(0,174+bottom,240,30);
     self.counter.hidden=preview; self.feedback.hidden=preview;
-    self.offworkLabel.hidden=preview || offset==0; self.offworkDuration.hidden=preview || offset==0;
-    for (CALayer *layer in @[self.counter,self.feedback,self.offworkLabel,self.offworkDuration])
+    // 下班倒计时区域：位于鼓励器区域之上（若两者同开）。
+    self.offworkLabel.frame=CGRectMake(0,encouragerHeight+55,240,28);
+    self.offworkDuration.frame=CGRectMake(0,encouragerHeight+14,240,35);
+    self.offworkLabel.hidden=preview || offworkHeight==0;
+    self.offworkDuration.hidden=preview || offworkHeight==0;
+    // 鼓励器区域：最底部 84pt。
+    self.encouragerLabel.frame=CGRectMake(0,encouragerHeight-26,240,22);
+    self.encouragerAmount.frame=CGRectMake(0,encouragerHeight-54,240,30);
+    self.encouragerBarBack.frame=CGRectMake(20,12,200,8);
+    const BOOL showEnc = !preview && encouragerHeight>0;
+    self.encouragerLabel.hidden=!showEnc; self.encouragerAmount.hidden=!showEnc;
+    self.encouragerBarBack.hidden=!showEnc;
+    for (CALayer *layer in @[self.counter,self.feedback,self.offworkLabel,self.offworkDuration,
+                             self.encouragerLabel,self.encouragerAmount,self.encouragerBarBack])
       layer.contentsScale=MAX(1,backing*scale);
+    [self applyEncouragerBar];
   });
+}
+- (void)applyEncouragerBar {
+  const CGFloat width = 200.0 * (CGFloat)std::clamp(self.encouragerProgress, 0.0, 1.0);
+  CGFloat maxWidth = self.encouragerBarBack.bounds.size.width;
+  if (maxWidth <= 0) maxWidth = 200;
+  self.encouragerBarFill.frame = CGRectMake(0, 0, maxWidth * (CGFloat)std::clamp(self.encouragerProgress,0.0,1.0), 8);
+  (void)width;
 }
 - (void)setCounter:(NSString *)counter label:(NSString *)label duration:(NSString *)duration {
   NSColor *color=[NSColor colorWithCalibratedRed:.78 green:.39 blue:.12 alpha:1];
@@ -215,6 +270,17 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     if([self.offworkDuration updateText:duration size:24 color:color]) self.textUpdates++;
     NSString *old=[self.offworkLabel.string isKindOfClass:NSAttributedString.class] ? [self.offworkLabel.string string] : self.offworkLabel.string;
     if(![old isEqual:label ?: @""]) { NMSetSceneText(self.offworkLabel,label,24,color);self.textUpdates++; }
+  });
+}
+- (void)setEncouragerLabel:(NSString *)label amount:(NSString *)amount progress:(double)progress visible:(BOOL)visible {
+  NSColor *color=[NSColor colorWithCalibratedRed:.78 green:.39 blue:.12 alpha:1];
+  self.encouragerProgress = progress;
+  NMNoImplicit(^{
+    NSString *oldLabel=[self.encouragerLabel.string isKindOfClass:NSAttributedString.class] ? [self.encouragerLabel.string string] : self.encouragerLabel.string;
+    if(![oldLabel isEqual:label ?: @""]) { NMSetSceneText(self.encouragerLabel,label,15,color);self.textUpdates++; }
+    NSString *oldAmount=[self.encouragerAmount.string isKindOfClass:NSAttributedString.class] ? [self.encouragerAmount.string string] : self.encouragerAmount.string;
+    if(![oldAmount isEqual:amount ?: @""]) { NMSetSceneText(self.encouragerAmount,amount,26,color);self.textUpdates++; }
+    [self applyEncouragerBar];
   });
 }
 
