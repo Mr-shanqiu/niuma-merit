@@ -2801,6 +2801,10 @@ static NSString *NMMedalIcon(int tier) {
       NSString *metricsDir = [support stringByAppendingPathComponent:@"NiuMaMerit"];
       self.metrics = [NMMetricsStore storeInDirectory:metricsDir];
       [self.metrics load];
+      // CONTRACT_096 §5.1.4：prefs.ui_language 由系统语言推导（§10）。启动时在
+      // 内存中镜像当前推导值；持久化沿用既有保存路径（首次启动的补授保存会带出），
+      // 不为此增加启动期磁盘写入。
+      [self.metrics prefs][@"ui_language"] = CurrentUiLanguageTag();
       [self loadEncouragerState];
       [self loadCurveState];
       [self loadMedalsState];
