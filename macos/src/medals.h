@@ -169,5 +169,48 @@ inline std::uint64_t SumRange(const std::vector<std::string> &keys, Lookup looku
   return total;
 }
 
+// ---- 历史静默补授（CONTRACT_096 §12.1，选择「基于旧日总数静默补授」）----
+// 基于旧存储每日总数重放历史：日/周/月各周期按时间升序求值，点亮历史应得勋章
+// 并按自然周期计次。sorted_day_keys 须为升序的 YYYY-MM-DD（非法键跳过）；
+// value_of(day) 返回该日总数。
+// 注意：ApplyMedal 的去重键是单个 last_period，对「跨多个周期获得」的勋章重放
+// 会重复计次，因此调用方必须保证只执行一次（mac 端用迁移标记
+// migration.medals_backfilled 守门）。纯算法层：无 UI、不弹窗、不写曲线数据。
+// 返回是否有变化。
+template <class DayValueLookup>
+inline bool BackfillHistory(EarnedMap *earned, const Thresholds &thresholds,
+                            const std::vector<std::string> &sorted_day_keys,
+                            DayValueLookup value_of) {
+  if (!earned) return false;
+  const auto saturating_add = [](std::uint64_t a, std::uint64_t b) {
+    return (b > UINT64_MAX - a) ? UINT64_MAX : a + b;
+  };
+  std::map<std::string, std::uint64_t> week_sum, month_sum;
+  std::map<std::string, std::string> week_first_day, month_first_day;
+  std::string last_day;
+  bool changed = false;
+  for (const std::string &day : sorted_day_keys) {
+    int y = 0, m = 0, d = 0;
+    if (!curve::ParseDateKey(day, &y, &m, &d)) continue;
+    last_day = day;
+    const std::uint64_t value = value_of(day);
+    changed |= EvaluatePeriod(earned, Period::Day, thresholds, DayPeriodKey(day), day, value);
+    const std::string week_key = WeekPeriodKey(y, m, d);
+    if (week_sum.find(week_key) == week_sum.end()) week_first_day[week_key] = day;
+    week_sum[week_key] = saturating_add(week_sum[week_key], value);
+    const std::string month_key = MonthPeriodKey(y, m);
+    if (month_sum.find(month_key) == month_sum.end()) month_first_day[month_key] = day;
+    month_sum[month_key] = saturating_add(month_sum[month_key], value);
+  }
+  for (const auto &week : week_sum)
+    changed |= EvaluatePeriod(earned, Period::Week, thresholds, week.first,
+                              week_first_day[week.first], week.second);
+  for (const auto &month : month_sum)
+    changed |= EvaluatePeriod(earned, Period::Month, thresholds, month.first,
+                              month_first_day[month.first], month.second);
+  if (!last_day.empty()) changed |= UpdateAchievement(earned, last_day);
+  return changed;
+}
+
 }  // namespace medal
 }  // namespace niuma

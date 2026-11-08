@@ -114,6 +114,53 @@ int main() {
   CHECK(ParseMedalKey("week.silver", &p, &t) && p == Period::Week && t == 1);
   CHECK(!ParseMedalKey("bad.key", &p, &t));
 
+  // --- BackfillHistory: 历史静默补授（一次性，CONTRACT_096 §12.1）---
+  {
+    // 每天 6000：日铜点亮×3；周/月合计不足，不点亮。周键 2026-11-02 起两周。
+    EarnedMap e6;
+    std::vector<std::string> days = {"2026-10-01", "2026-10-02", "2026-11-08"};
+    auto value = [](const std::string &) { return (std::uint64_t)6000; };
+    CHECK(BackfillHistory(&e6, th, days, value));
+    CHECK(e6["day.bronze"].lit && e6["day.bronze"].count == 3);
+    CHECK(e6["day.bronze"].first_earned_day == "2026-10-01");
+    CHECK(!e6.count("week.bronze"));
+    CHECK(!e6.count("month.bronze"));
+    CHECK(!e6.count("achievement.all"));
+  }
+  {
+    // 2026-11-02（周一）..11-08（周日）每天 5000：
+    // 日铜×7；周合计 35000 >= 周铜 30000；月合计 35000 < 月铜 120000。
+    EarnedMap e7;
+    std::vector<std::string> days;
+    for (int d = 2; d <= 8; ++d) {
+      char buf[16];
+      std::snprintf(buf, sizeof(buf), "2026-11-%02d", d);
+      days.push_back(buf);
+    }
+    auto value = [](const std::string &) { return (std::uint64_t)5000; };
+    CHECK(BackfillHistory(&e7, th, days, value));
+    CHECK(e7["day.bronze"].count == 7);
+    CHECK(e7["week.bronze"].lit && e7["week.bronze"].count == 1);
+    CHECK(e7["week.bronze"].first_earned_day == "2026-11-02");
+    CHECK(!e7.count("month.bronze"));
+    // 空/全非法键：无变化
+    EarnedMap e8 = e7;
+    std::vector<std::string> bad = {"not-a-date", ""};
+    CHECK(!BackfillHistory(&e8, th, bad, value));
+    CHECK(e8["day.bronze"].count == 7);
+  }
+  {
+    // 集齐成就补授：日/周/月全部达标（月合计 800000 >= 700000；两日分属不同周，
+    // 各周 400000 >= 180000）-> achievement.all 点亮，首次日 = 最后一天。
+    EarnedMap e9;
+    std::vector<std::string> days = {"2026-11-01", "2026-11-08"};
+    auto value = [](const std::string &) { return (std::uint64_t)400000; };
+    CHECK(BackfillHistory(&e9, th, days, value));
+    CHECK(AllMedalsLit(e9));
+    CHECK(e9["achievement.all"].lit && e9["achievement.all"].count == 1);
+    CHECK(e9["achievement.all"].first_earned_day == "2026-11-08");
+  }
+
   if (g_fail == 0) std::printf("medals_test: OK\n");
   else std::printf("medals_test: %d FAILURES\n", g_fail);
   return g_fail == 0 ? 0 : 1;

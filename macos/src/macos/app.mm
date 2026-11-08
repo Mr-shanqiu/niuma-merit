@@ -779,6 +779,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)curveModeChanged:(id)sender;
 // F3 勋章
 - (void)loadMedalsState;
+- (void)backfillMedalsFromHistory;
 - (void)evaluateMedals;
 - (void)saveMedals;
 - (void)showMedals:(id)sender;
@@ -2060,6 +2061,37 @@ static NSString *NMMedalIcon(int tier) {
   }
 }
 
+// CONTRACT_096 §12.1（选择「基于旧日总数静默补授」）：升级后按旧存储
+// dailyTotals 的历史一次性补授勋章，不弹窗、不伪造曲线数据。
+// 幂等守门：migration.medals_backfilled 置位后不再执行（重放会对跨多个周期
+// 获得的勋章重复计次，见 medals.h BackfillHistory 注释）。
+- (void)backfillMedalsFromHistory {
+  if (!self.metrics) return;
+  NSMutableDictionary *migration = [self.metrics migration];
+  if ([migration[@"medals_backfilled"] boolValue]) return;
+  // 先置位再补授：即使中途失败也不在下次启动重复计次。
+  migration[@"medals_backfilled"] = @YES;
+
+  std::vector<std::string> dayKeys;
+  for (NSString *key in self.dailyTotals) {
+    if (![key isKindOfClass:NSString.class]) continue;
+    const char *utf8 = key.UTF8String;
+    int year = 0, month = 0, day = 0;
+    if (!utf8 || !niuma::curve::ParseDateKey(std::string(utf8), &year, &month, &day)) continue;
+    dayKeys.push_back(std::string(utf8));
+  }
+  std::sort(dayKeys.begin(), dayKeys.end());
+  NSDictionary<NSString *, NSNumber *> *totals = self.dailyTotals;
+  const bool changed = niuma::medal::BackfillHistory(&_medalEarned,
+      niuma::medal::BuiltinThresholds(), dayKeys,
+      [&totals](const std::string &day) -> std::uint64_t {
+        NSString *key = [NSString stringWithUTF8String:day.c_str()];
+        return [totals[key] unsignedLongLongValue];
+      });
+  if (changed) _medalDirty = true;
+  [self saveMedals];
+}
+
 - (unsigned long long)medalPeriodValue:(niuma::medal::Period)period {
   NSDateComponents *comp = [RecordCalendar() components:
       NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:NSDate.date];
@@ -2772,6 +2804,7 @@ static NSString *NMMedalIcon(int tier) {
       [self loadEncouragerState];
       [self loadCurveState];
       [self loadMedalsState];
+      [self backfillMedalsFromHistory];
     }
   }
   if (!gIsolatedAcceptance || gAcceptanceRootPath.length) {
