@@ -12,7 +12,8 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" \
   "$APP_DIR/Contents/Resources/en.lproj" \
   "$APP_DIR/Contents/Resources/zh-Hans.lproj" \
-  "$APP_DIR/Contents/Resources/zh-Hant.lproj"
+  "$APP_DIR/Contents/Resources/zh-Hant.lproj" \
+  "$APP_DIR/Contents/Resources/ja.lproj"
 cp "$ROOT_DIR/assets/woodfish.png" "$APP_DIR/Contents/Resources/woodfish.png"
 cp "$ROOT_DIR/assets/mallet.png" "$APP_DIR/Contents/Resources/mallet.png"
 cp "$ROOT_DIR/assets/developer-douyin.png" "$APP_DIR/Contents/Resources/developer-douyin.png"
@@ -23,6 +24,8 @@ cp "$ROOT_DIR/src/macos/zh-Hans.lproj/InfoPlist.strings" \
   "$APP_DIR/Contents/Resources/zh-Hans.lproj/InfoPlist.strings"
 cp "$ROOT_DIR/src/macos/zh-Hant.lproj/InfoPlist.strings" \
   "$APP_DIR/Contents/Resources/zh-Hant.lproj/InfoPlist.strings"
+cp "$ROOT_DIR/src/macos/ja.lproj/InfoPlist.strings" \
+  "$APP_DIR/Contents/Resources/ja.lproj/InfoPlist.strings"
 
 ARCHS="arm64 x86_64"
 for ARCH in $ARCHS; do

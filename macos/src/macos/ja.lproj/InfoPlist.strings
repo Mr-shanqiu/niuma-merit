@@ -1,0 +1,3 @@
+"CFBundleDisplayName" = "牛馬電子功徳";
+"CFBundleName" = "牛馬電子功徳";
+"NSInputMonitoringUsageDescription" = "キー入力・マウスクリック・スクロールジェスチャの回数のみをカウントし、具体的な内容、位置、ウィンドウ情報は読み取りません。";

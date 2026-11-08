@@ -345,22 +345,10 @@ static niuma::reminder::Locale NMReminderLocale(void) {
 }
 
 // CONTRACT_096 §10: 规范语言标签（zh-Hans / zh-Hant / ja / en），无法识别回落 zh-Hans。
-// 与 NMUiLanguage 的判定保持一致（同一套归一化规则），供货币默认等场景使用。
+// 复用 NMCurrentUiLanguage 的归一化结果 + S0 的 LocaleLanguage 标签映射，保证
+// UI 文案、内容语言（reminder catalog，NMReminderLocale）与货币默认三处同一规则。
 static NSString *CurrentUiLanguageTag(void) {
-  NSString *override = NSProcessInfo.processInfo.environment[@"NIUMA_UI_LANGUAGE"];
-  if ([override isEqualToString:@"zh"]) return @"zh-Hans";
-  if ([override isEqualToString:@"en"]) return @"en";
-  NSString *language = NSLocale.preferredLanguages.firstObject.lowercaseString;
-  if (language.length == 0) return @"zh-Hans";
-  if ([language hasPrefix:@"zh"]) {
-    if ([language containsString:@"hant"] || [language containsString:@"-tw"] ||
-        [language containsString:@"-hk"] || [language containsString:@"-mo"])
-      return @"zh-Hant";
-    return @"zh-Hans";
-  }
-  if ([language hasPrefix:@"ja"]) return @"ja";
-  if ([language hasPrefix:@"en"]) return @"en";
-  return @"zh-Hans";
+  return [NSString stringWithUTF8String:niuma::reminder::LocaleLanguage(NMReminderLocale())];
 }
 
 static niuma::encourager::CurrencyInfo DefaultCurrencyForCurrentLanguage(void) {
