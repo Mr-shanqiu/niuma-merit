@@ -2,7 +2,11 @@
 #include <ctime>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <algorithm>
+#include <map>
+#include <string>
+#include "../merit_curve.h"
 
 // F0: scroll counting is by distance, not by a per-gesture debounce. These
 // helpers are shared by the live input mailbox below and the CGEventTap
@@ -118,6 +122,7 @@ class NMSynchronizedActivity {
   long long _remaining;
   double _lastCount,_interval,_checkStart,_checkEnd,_checkLast;
   niuma::macos::ScrollTickCounter _scrollCounter;
+  std::map<std::string, niuma::curve::CurveDay> _curve;
   BOOL _checking;
   time_t _lastWallSecond;
   NSString *_dateKey;
@@ -158,6 +163,14 @@ class NMSynchronizedActivity {
   if(type==kCGEventScrollWheel)
     increments=(NSUInteger)_scrollCounter.Consume(scrollTicks,phase,momentum,uptime);
   if(checking) _checkExpected+=increments;
+  // F4: 按事件发生的本地时间归桶。每个实际计数增量都记入对应 15 分钟桶。
+  std::string curveKey; int curveBucket=-1;
+  if(increments>0) {
+    struct tm local{}; localtime_r(&wall,&local);
+    char ck[32]{}; strftime(ck,sizeof(ck),"%Y-%m-%d",&local);
+    curveKey.assign(ck);
+    curveBucket=niuma::curve::BucketForMinute(local.tm_hour*60+local.tm_min);
+  }
   for(NSUInteger i=0;i<increments;i++) {
     if(_remaining<=0) break;
     --_remaining;
@@ -166,6 +179,7 @@ class NMSynchronizedActivity {
       _dateKey=[NSString stringWithUTF8String:key];_lastWallSecond=wall;
     }
     _days[_dateKey]=@([_days[_dateKey] longLongValue]+1);
+    if(curveBucket>=0) _curve[curveKey].AddCount(curveBucket,1);
     if(checking) ++_checkCounted;
   }
   if(increments>0) {
@@ -177,9 +191,17 @@ class NMSynchronizedActivity {
 }
 - (NSDictionary *)take {
   [_lock lock];
-  NSDictionary *snapshot=@{@"days":_days,@"events":@(_events),@"keys":@(_keys),@"clicks":@(_clicks),@"scrolls":@(_scrolls),
+  NSMutableDictionary *snapshot=[@{@"days":_days,@"events":@(_events),@"keys":@(_keys),@"clicks":@(_clicks),@"scrolls":@(_scrolls),
     @"checkKeys":@(_checkKeys),@"checkClicks":@(_checkClicks),@"checkScrolls":@(_checkScrolls),@"checkCounted":@(_checkCounted),@"checkExpected":@(_checkExpected),
-    @"checkLast":@(_checkLast),@"interval":@(_interval),@"lastCount":@(_lastCount),@"disabled":@(_disabled)};
+    @"checkLast":@(_checkLast),@"interval":@(_interval),@"lastCount":@(_lastCount),@"disabled":@(_disabled)} mutableCopy];
+  NSMutableDictionary *curveOut=[NSMutableDictionary dictionaryWithCapacity:_curve.size()];
+  for(const auto &entry:_curve) {
+    NSData *buckets=[NSData dataWithBytes:entry.second.buckets.data() length:96*sizeof(std::uint64_t)];
+    NSData *coverage=[NSData dataWithBytes:entry.second.coverage.bytes.data() length:12];
+    curveOut[[NSString stringWithUTF8String:entry.first.c_str()]]=@{@"buckets":buckets,@"coverage":coverage};
+  }
+  _curve.clear();
+  snapshot[@"curve"]=curveOut;
   _days=[NSMutableDictionary dictionary]; _events=_keys=_clicks=_scrolls=_checkKeys=_checkClicks=_checkScrolls=_checkCounted=_checkExpected=0; _disabled=(CGEventType)0;
   [_lock unlock];return snapshot;
 }

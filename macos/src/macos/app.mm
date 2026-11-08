@@ -7,9 +7,11 @@
 #import "appearance_pack.mm"
 #import "layer_scene.mm"
 #import "thumbnail_grid.mm"
+#import "share_card.mm"
 #include "../offwork_clock.h"
 #include "../calendar_month_range.h"
 #include "../work_encourager.h"
+#include "../merit_curve.h"
 #include "../client/core/visibility_state.h"
 #include "../reminder_activity.h"
 #include "../reminder_geometry.h"
@@ -26,6 +28,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <map>
+#include <string>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -405,6 +409,7 @@ static NSImage *NMEncouragerArtwork(void) {
 
 @class MeritController;
 @class MeritCalendarView;
+@class NMCurveView;
 static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, void *);
 
 @interface MeritView : NSView
@@ -447,6 +452,10 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   std::unique_ptr<niuma::reminder::CatalogUpdateStore> _catalogStore;
   std::shared_ptr<niuma::reminder::ValidatedCatalog> _reminderCatalog;
   bool _reminderCatalogCommitUncertain;
+  // F4 曲线：本地日 → 96 桶 + 覆盖位图（内存态；定期批量落盘）。
+  std::map<std::string, niuma::curve::CurveDay> _curveDays;
+  bool _curveDirty;
+  NSTimeInterval _curveLastFlushUptime;
 }
 @property(nonatomic) BOOL readyForOpenedFiles;
 @property(nonatomic, strong) NSMutableArray<NSString *> *pendingOpenFiles;
@@ -501,6 +510,10 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, strong) NSPopUpButton *encouragerStartMinuteControl;
 @property(nonatomic, strong) NSPopUpButton *encouragerEndHourControl;
 @property(nonatomic, strong) NSPopUpButton *encouragerEndMinuteControl;
+// F4 牛马曲线
+@property(nonatomic, strong) NSWindow *curveWindow;
+@property(nonatomic, strong) NMCurveView *curveView;
+@property(nonatomic, strong) NSSegmentedControl *curveModeControl;
 // F1: user-selectable appearance multiplier (1.0 = 100%), applied to the whole
 // desktop widget. uiScale is the effective design->point scale (base * factor,
 // capped by the visible screen area).
@@ -672,6 +685,17 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (CGFloat)desiredExtraRegionHeight;
 - (void)updateRegionLayout;
 - (void)saveMetrics;
+// F4 牛马曲线
+- (void)loadCurveState;
+- (void)flushCurve;
+- (void)markCurveHeartbeat;
+- (void)mergeCurveDeltas:(NSDictionary *)deltas;
+- (void)recordCurveIncrementAtWall:(std::time_t)wall;
+- (void)pruneCurveDays;
+- (NSDictionary *)curveDayForDisplay:(NSString *)key;
+- (void)showMeritCurve:(id)sender;
+- (void)exportCurveShareCard:(id)sender;
+- (void)curveModeChanged:(id)sender;
 @end
 
 @implementation MeritView
@@ -1063,6 +1087,15 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @end
 
 #import "calendar_view.mm"
+
+// F4 曲线视图：日（96 桶）/ 周（7 天日总）/ 月（当月日总）。
+@interface NMCurveView : NSView
+@property(nonatomic, weak) MeritController *controller;
+@property(nonatomic) NSInteger mode;  // 0=日 1=周 2=月
+- (void)refreshToToday;
+@end
+
+#import "curve_view.mm"
 
 @implementation MeritController
 
@@ -1727,6 +1760,160 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   [self.metrics save];
 }
 
+// ---- F4 牛马曲线 ----
+
+static BOOL NMParseU64(const char *text, std::uint64_t *out) {
+  if (!text || !*text || !out) return NO;
+  char *end = nullptr;
+  errno = 0;
+  unsigned long long v = std::strtoull(text, &end, 10);
+  if (end == text || (end && *end) || errno == ERANGE) return NO;
+  *out = (std::uint64_t)v;
+  return YES;
+}
+
+- (void)loadCurveState {
+  _curveDays.clear();
+  _curveDirty = NO;
+  _curveLastFlushUptime = NSProcessInfo.processInfo.systemUptime;
+  if (!self.metrics) return;
+  NSDictionary *curveBlock = [self.metrics curve];
+  NSDictionary *days = curveBlock[@"days"];
+  if (![days isKindOfClass:NSDictionary.class]) return;
+  for (NSString *key in days) {
+    NSString *keyString = [key isKindOfClass:NSString.class] ? key : nil;
+    if (!keyString) continue;
+    NSDictionary *record = days[key];
+    if (![record isKindOfClass:NSDictionary.class]) continue;
+    NSArray *buckets = record[@"buckets"];
+    NSString *coverageHex = record[@"coverage"];
+    if (![buckets isKindOfClass:NSArray.class] || buckets.count != 96) continue;
+    if (![coverageHex isKindOfClass:NSString.class]) continue;
+    niuma::curve::Coverage coverage;
+    if (!niuma::curve::Coverage::FromHex(std::string(coverageHex.UTF8String ?: ""), &coverage))
+      continue;
+    niuma::curve::CurveDay day;
+    day.coverage = coverage;
+    BOOL ok = YES;
+    for (int i = 0; i < 96; ++i) {
+      id value = buckets[(NSUInteger)i];
+      std::uint64_t parsed = 0;
+      if ([value isKindOfClass:NSNumber.class]) {
+        parsed = [value unsignedLongLongValue];
+      } else if ([value isKindOfClass:NSString.class]) {
+        if (!NMParseU64([value UTF8String], &parsed)) { ok = NO; break; }
+      } else {
+        ok = NO;
+        break;
+      }
+      day.buckets[(std::size_t)i] = parsed;
+    }
+    if (!ok) continue;
+    _curveDays[std::string(keyString.UTF8String)] = day;
+  }
+  [self pruneCurveDays];
+}
+
+- (void)pruneCurveDays {
+  if (_curveDays.empty()) return;
+  std::vector<std::string> keys;
+  keys.reserve(_curveDays.size());
+  for (const auto &entry : _curveDays) keys.push_back(entry.first);
+  NSString *today = DateKeyForDate(NSDate.date);
+  std::vector<std::string> remove = niuma::curve::KeysToPrune(
+      keys, std::string(today.UTF8String ?: ""), niuma::curve::kRetentionDays);
+  for (const std::string &key : remove) _curveDays.erase(key);
+}
+
+// 合并来自输入邮箱的按日桶增量（NSData：96×uint64 + 12 字节覆盖位图）。
+- (void)mergeCurveDeltas:(NSDictionary *)deltas {
+  if (![deltas isKindOfClass:NSDictionary.class] || deltas.count == 0) return;
+  for (NSString *key in deltas) {
+    NSDictionary *record = deltas[key];
+    if (![record isKindOfClass:NSDictionary.class]) continue;
+    NSData *bucketData = record[@"buckets"];
+    NSData *coverageData = record[@"coverage"];
+    if (bucketData.length != 96 * sizeof(std::uint64_t) || coverageData.length != 12) continue;
+    std::uint64_t values[96];
+    std::memcpy(values, bucketData.bytes, sizeof(values));
+    niuma::curve::CurveDay &day = _curveDays[std::string(key.UTF8String)];
+    for (int i = 0; i < 96; ++i) {
+      if (values[i] == 0) continue;
+      std::uint64_t &cell = day.buckets[(std::size_t)i];
+      cell = (values[i] > UINT64_MAX - cell) ? UINT64_MAX : cell + values[i];
+    }
+    const unsigned char *coverage = static_cast<const unsigned char *>(coverageData.bytes);
+    for (int i = 0; i < 12; ++i) day.coverage.bytes[(std::size_t)i] |= coverage[i];
+    _curveDirty = YES;
+  }
+}
+
+- (void)recordCurveIncrementAtWall:(std::time_t)wall {
+  struct tm local = {};
+  if (!niuma::OffworkLocalTime(wall, &local)) return;
+  char key[32] = {};
+  if (!std::strftime(key, sizeof(key), "%Y-%m-%d", &local)) return;
+  const int bucket = niuma::curve::BucketForMinute(local.tm_hour * 60 + local.tm_min);
+  _curveDays[std::string(key)].AddCount(bucket, 1);
+  _curveDirty = YES;
+}
+
+// 心跳：应用运行期间把当前桶标记为「已观测」（coverage=1），用于区分真零与未采集。
+- (void)markCurveHeartbeat {
+  const std::time_t now = std::time(nullptr);
+  struct tm local = {};
+  if (!niuma::OffworkLocalTime(now, &local)) return;
+  char key[32] = {};
+  if (!std::strftime(key, sizeof(key), "%Y-%m-%d", &local)) return;
+  const int bucket = niuma::curve::BucketForMinute(local.tm_hour * 60 + local.tm_min);
+  niuma::curve::CurveDay &day = _curveDays[std::string(key)];
+  if (!day.coverage.Get(bucket)) {
+    day.MarkObserved(bucket);
+    _curveDirty = YES;
+  }
+}
+
+- (void)flushCurve {
+  _curveLastFlushUptime = NSProcessInfo.processInfo.systemUptime;
+  if (!self.metrics || !_curveDirty) return;
+  [self pruneCurveDays];
+  NSMutableDictionary *curveBlock = [self.metrics curve];
+  NSMutableDictionary *days = [NSMutableDictionary dictionaryWithCapacity:_curveDays.size()];
+  for (const auto &entry : _curveDays) {
+    NSMutableArray *buckets = [NSMutableArray arrayWithCapacity:96];
+    for (int i = 0; i < 96; ++i) {
+      std::uint64_t value = entry.second.buckets[(std::size_t)i];
+      // 契约允许十进制字符串以无损表示 >2^53 的 64 位值；小值写 JSON 数字。
+      if (value <= 9007199254740992ULL)
+        [buckets addObject:@(value)];
+      else
+        [buckets addObject:[NSString stringWithFormat:@"%llu", (unsigned long long)value]];
+    }
+    days[[NSString stringWithUTF8String:entry.first.c_str()]] = @{
+      @"coverage" : [NSString stringWithUTF8String:entry.second.coverage.ToHex().c_str()],
+      @"buckets" : buckets,
+    };
+  }
+  curveBlock[@"bucket_minutes"] = @15;
+  curveBlock[@"buckets_per_day"] = @96;
+  curveBlock[@"retention_days"] = @60;
+  curveBlock[@"days"] = days;
+  [self.metrics save];
+  _curveDirty = NO;
+}
+
+- (NSDictionary *)curveDayForDisplay:(NSString *)key {
+  if (![key isKindOfClass:NSString.class]) return nil;
+  auto it = _curveDays.find(std::string(key.UTF8String ?: ""));
+  if (it == _curveDays.end()) return nil;
+  NSMutableArray *buckets = [NSMutableArray arrayWithCapacity:96];
+  for (int i = 0; i < 96; ++i) [buckets addObject:@(it->second.buckets[(std::size_t)i])];
+  return @{
+    @"buckets" : buckets,
+    @"coverage" : [NSString stringWithUTF8String:it->second.coverage.ToHex().c_str()],
+  };
+}
+
 - (void)loadState {
   id<NMMeritPreferences> defaults = MeritPreferences();
   self.total = [defaults integerForKey:kTotal];
@@ -1755,6 +1942,10 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
 
 - (void)saveState {
   [self drainInput];
+  [self markCurveHeartbeat];
+  if (_curveDirty &&
+      NSProcessInfo.processInfo.systemUptime - _curveLastFlushUptime >= 15)
+    [self flushCurve];
   if (!self.dirty) return;
   id<NMMeritPreferences> defaults = MeritPreferences();
   [defaults setInteger:self.total forKey:kTotal];
@@ -2143,6 +2334,7 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
       self.metrics = [NMMetricsStore storeInDirectory:metricsDir];
       [self.metrics load];
       [self loadEncouragerState];
+      [self loadCurveState];
     }
   }
   if (!gIsolatedAcceptance || gAcceptanceRootPath.length) {
@@ -2493,6 +2685,7 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   [self.encouragerTimer invalidate];
   self.encouragerTimer = nil;
   [self saveState];
+  [self flushCurve];
   [self saveMetrics];
   [self.saveTimer invalidate]; self.saveTimer=nil;
   [self.dayTimer invalidate];
@@ -2600,6 +2793,7 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
     long long old=[self.dailyTotals[key] longLongValue];
     self.dailyTotals[key]=@(count>LLONG_MAX-old ? LLONG_MAX : old+count);
   }
+  [self mergeCurveDeltas:snapshot[@"curve"]];
   self.receivedEvents+=[snapshot[@"events"] unsignedIntegerValue];
   self.receivedKeys+=[snapshot[@"keys"] unsignedIntegerValue];
   self.receivedClicks+=[snapshot[@"clicks"] unsignedIntegerValue];
@@ -3177,6 +3371,7 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   if (self.todayTotal < LLONG_MAX) self.todayTotal++;
   self.dailyTotals[self.currentDayKey] = @(self.todayTotal);
   self.dirty = YES;
+  [self recordCurveIncrementAtWall:std::time(nullptr)];
   NSTimeInterval now = CACurrentMediaTime();
   if (self.lastInputTime > 0) {
     NSTimeInterval gap = now - self.lastInputTime;
@@ -3329,6 +3524,11 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
              action:@selector(showMeritCalendar:)
       keyEquivalent:@""];
   calendar.target = self;
+  NSMenuItem *curveItem = [[NSMenuItem alloc]
+      initWithTitle:UiText(@"牛马曲线…", @"Merit Curve…")
+             action:@selector(showMeritCurve:)
+      keyEquivalent:@""];
+  curveItem.target = self;
   NSMenuItem *offwork = [[NSMenuItem alloc]
       initWithTitle:UiText(@"下班倒计时…", @"Off-work Countdown…")
              action:@selector(showOffworkSettings:) keyEquivalent:@""];
@@ -3357,12 +3557,12 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
       action:@selector(toggleAutoHideFullscreen:) keyEquivalent:@""];
   autoHide.target = self;
   autoHide.state = _visibility.autoHideFullscreen ? NSControlStateValueOn : NSControlStateValueOff;
-  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, offwork, encourager, launchAtLogin, about, quit];
+  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, curveItem, offwork, encourager, launchAtLogin, about, quit];
   for (NSMenuItem *item in entries) [menu addItem:item];
   NSFont *menuFont = [NSFont systemFontOfSize:14];
   menu.font = menuFont;
   if (@available(macOS 11.0, *)) {
-    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"clock", @"yensign.circle", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
+    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"chart.bar", @"clock", @"yensign.circle", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
     for (NSUInteger index = 0; index < entries.count; ++index) {
       NSImage *image = [NSImage imageWithSystemSymbolName:symbols[index] accessibilityDescription:nil];
       image.size = NSMakeSize(16, 16); ((NSMenuItem *)entries[index]).image = image;
@@ -3489,6 +3689,160 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
 
 - (void)shiftCalendarMonth:(NSButton *)sender {
   [self.calendarView shiftMonth:sender.tag];
+}
+
+// ---- F4 牛马曲线窗口 ----
+- (void)showMeritCurve:(id)sender {
+  (void)sender;
+  [self ensureCurrentDay];
+  if (!self.curveWindow) {
+    NSRect frame = NSMakeRect(0, 0, 760, 470);
+    NSView *container = [[NSView alloc] initWithFrame:frame];
+    self.curveView = [[NMCurveView alloc] initWithFrame:NSMakeRect(0, 0, 760, 430)];
+    self.curveView.controller = self;
+    self.curveView.mode = 0;
+    self.curveView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [container addSubview:self.curveView];
+    NSSegmentedControl *segments = [NSSegmentedControl
+        segmentedControlWithLabels:@[ UiText(@"日", @"Day"), UiText(@"周", @"Week"),
+                                      UiText(@"月", @"Month") ]
+                     trackingMode:NSSegmentSwitchTrackingSelectOne
+                           target:self
+                           action:@selector(curveModeChanged:)];
+    segments.frame = NSMakeRect(24, 436, 260, 28);
+    segments.selectedSegment = 0;
+    segments.accessibilityLabel = UiText(@"曲线视图", @"Curve view");
+    self.curveModeControl = segments;
+    [container addSubview:segments];
+    NSButton *exportButton = [NSButton buttonWithTitle:UiText(@"导出分享图…", @"Export Share Image…")
+        target:self action:@selector(exportCurveShareCard:)];
+    exportButton.frame = NSMakeRect(552, 436, 184, 30);
+    exportButton.autoresizingMask = NSViewMinXMargin;
+    [container addSubview:exportButton];
+    self.curveWindow = [[NSWindow alloc] initWithContentRect:frame
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
+        backing:NSBackingStoreBuffered defer:NO];
+    self.curveWindow.title = UiText(@"牛马曲线", @"Merit Curve");
+    self.curveWindow.contentView = container;
+    self.curveWindow.releasedWhenClosed = NO;
+    self.curveWindow.minSize = NSMakeSize(560, 360);
+    if (gIsolatedAcceptance) self.curveWindow.restorable = NO;
+    NMUiWindow(self.curveWindow);
+    [self.curveWindow center];
+  }
+  [self.curveView refreshToToday];
+  [NSApp activateIgnoringOtherApps:YES];
+  [self.curveWindow makeKeyAndOrderFront:nil];
+}
+
+- (void)curveModeChanged:(id)sender {
+  (void)sender;
+  self.curveView.mode = self.curveModeControl.selectedSegment;
+  [self.curveView refreshToToday];
+}
+
+- (void)exportCurveShareCard:(id)sender {
+  (void)sender;
+  [self ensureCurrentDay];
+  NSDateComponents *comp = [RecordCalendar() components:
+      NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:NSDate.date];
+  const int year = (int)comp.year, month = (int)comp.month, day = (int)comp.day;
+  NSString *todayKey = DateKeyForDate(NSDate.date);
+  NSNumberFormatter *fmt = [NSNumberFormatter new];
+  fmt.numberStyle = NSNumberFormatterDecimalStyle;
+  NSMutableArray<NSNumber *> *points = [NSMutableArray array];
+  NSMutableArray<NSString *> *labels = [NSMutableArray array];
+  unsigned long long total = 0;
+  NSString *subtitle = nil;
+  NSString *rangeLabel = nil;
+  NSString *viewName = nil;
+  if (self.curveModeControl.selectedSegment == 0) {
+    NSDictionary *snapshot = [self curveDayForDisplay:todayKey];
+    NSArray *buckets = snapshot[@"buckets"];
+    niuma::curve::Coverage coverage;
+    const bool haveCoverage = snapshot && niuma::curve::Coverage::FromHex(
+        std::string([snapshot[@"coverage"] UTF8String] ?: ""), &coverage);
+    for (int i = 0; i < 96; ++i) {
+      unsigned long long v = (buckets && (NSUInteger)i < buckets.count)
+          ? [buckets[(NSUInteger)i] unsignedLongLongValue] : 0;
+      if (haveCoverage && !coverage.Get(i)) v = 0;
+      [points addObject:@(v)];
+    }
+    for (int hour = 0; hour <= 24; hour += 6)
+      [labels addObject:[NSString stringWithFormat:@"%02d", hour]];
+    // 让 labels 与 points 等长以便渲染器按索引对齐：用空串占位。
+    NSMutableArray<NSString *> *full = [NSMutableArray array];
+    for (int i = 0; i < 96; ++i) [full addObject:@""];
+    for (int hour = 0; hour <= 24; hour += 6) full[(NSUInteger)(hour * 4)] = [NSString stringWithFormat:@"%02d", hour];
+    labels = full;
+    total = [self.dailyTotals[todayKey] unsignedLongLongValue];
+    subtitle = [NSString stringWithFormat:UiText(@"%@ · 今日 96 桶", @"%@ · Today, 96 buckets"), todayKey];
+    rangeLabel = todayKey;
+    viewName = @"day";
+  } else if (self.curveModeControl.selectedSegment == 1) {
+    std::vector<std::string> keys = niuma::curve::WeekDayKeys(year, month, day);
+    NSArray *zh = @[ @"一", @"二", @"三", @"四", @"五", @"六", @"日" ];
+    NSArray *en = @[ @"MON", @"TUE", @"WED", @"THU", @"FRI", @"SAT", @"SUN" ];
+    for (int i = 0; i < 7; ++i) {
+      NSString *k = [NSString stringWithUTF8String:keys[(std::size_t)i].c_str()];
+      unsigned long long v = [self.dailyTotals[k] unsignedLongLongValue];
+      [points addObject:@(v)];
+      [labels addObject:(IsChineseUI() ? zh : en)[i]];
+      total = (v > ULLONG_MAX - total) ? ULLONG_MAX : total + v;
+    }
+    subtitle = UiText(@"本周每日功德（周一–周日）", @"Daily merit this week (Mon–Sun)");
+    rangeLabel = [NSString stringWithUTF8String:keys.front().c_str()];
+    viewName = @"week";
+  } else {
+    std::vector<std::string> keys = niuma::curve::MonthDayKeys(year, month);
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+      NSString *k = [NSString stringWithUTF8String:keys[i].c_str()];
+      unsigned long long v = [self.dailyTotals[k] unsignedLongLongValue];
+      [points addObject:@(v)];
+      [labels addObject:[NSString stringWithFormat:@"%lu", (unsigned long)(i + 1)]];
+      total = (v > ULLONG_MAX - total) ? ULLONG_MAX : total + v;
+    }
+    subtitle = [NSString stringWithFormat:UiText(@"%ld 年 %ld 月每日功德", @"Daily merit %ld / %ld"),
+        (long)year, (long)month];
+    rangeLabel = [NSString stringWithFormat:@"%04d-%02d", year, month];
+    viewName = @"month";
+  }
+
+  NMShareCardModel *model = [NMShareCardModel new];
+  model.kind = NMShareCardKindCurve;
+  model.locale = CurrentUiLanguageTag();
+  model.appVersion = kNiuMa096AppVersion;
+  model.generatedOn = todayKey;
+  model.title = UiText(@"牛马电子功德", @"NiuMa Merit");
+  model.subtitle = subtitle;
+  model.meritPeriod = viewName;
+  model.meritValue = total;
+  model.curveView = viewName;
+  model.curveRangeLabel = rangeLabel;
+  model.curveYUnit = UiText(@"功德", @"merit");
+  model.curvePoints = points;
+  model.curveLabels = labels;
+  model.footerProduct = UiText(@"牛马电子功德", @"NiuMa Merit");
+  model.footerWatermark = @"niuma-merit 0.9.6";
+  if (self.encouragerActive) {
+    model.moneyDisplay = self.encouragerDisplayAmount;
+    model.moneyCurrency = self.encouragerCurrency;
+    model.moneyExponent = niuma::encourager::ExponentForCode(
+        std::string(self.encouragerCurrency.UTF8String ?: "CNY"));
+    model.moneyAmountMinor = 0;
+  }
+  NSData *png = NMRenderShareCardPNG(model, 1000, 1250);
+  if (!png || !NMSaveShareCardPNG(png, self.curveWindow, @"niuma-merit-curve.png")) {
+    if (!png) {
+      NSAlert *alert = [[NMUiAlert alloc] init];
+      alert.messageText = UiText(@"导出失败", @"Export Failed");
+      alert.informativeText = UiText(@"未能生成分享图，请稍后重试。",
+          @"Could not generate the share image. Please try again.");
+      [alert addButtonWithTitle:UiText(@"好", @"OK")];
+      [alert runModal];
+    }
+  }
+  (void)fmt;
 }
 
 - (void)selectAppearance:(NSButton *)sender {
