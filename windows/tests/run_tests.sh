@@ -49,7 +49,7 @@ if [ "${NIUMA_TEST_SANITIZE:-0}" = "1" ]; then
 fi
 
 status=0
-for name in work_encourager merit_curve medals scroll_tick_counter; do
+for name in work_encourager merit_curve medals scroll_tick_counter metrics_json metrics_store; do
   printf '== %s ==\n' "$name"
   # shellcheck disable=SC2086
   if ! "$cxx" $cxxflags -I"$include" "$here/${name}_test.cpp" -o "$work/$name"; then

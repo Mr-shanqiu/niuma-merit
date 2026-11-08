@@ -22,6 +22,11 @@ target_link_libraries(niuma-windows-input PUBLIC niuma-input-core Threads::Threa
 add_library(niuma-windows-storage STATIC src/windows/runtime/storage_service.cpp)
 target_link_libraries(niuma-windows-storage PUBLIC niuma-runtime-core Threads::Threads user32)
 
+# metrics-096.json 侧车（0.9.6 新增数据；不依赖 GDI/D3D，平台层只用了 Win32 文件 API）。
+add_library(niuma-windows-metrics STATIC
+  src/client/core/metrics_json.cpp src/windows/runtime/metrics_store_win.cpp)
+target_link_libraries(niuma-windows-metrics PUBLIC niuma-runtime-core Threads::Threads)
+
 add_library(niuma-windows-composition STATIC
   src/windows/runtime/composition_presenter.cpp src/windows/runtime/d3d11_renderer.cpp
   src/windows/runtime/layered_renderer.cpp)
@@ -51,12 +56,13 @@ target_include_directories(niuma-merit PRIVATE src/windows third_party/miniz "${
 target_compile_definitions(niuma-merit PRIVATE
   NIUMA_COMPOSITION_RUNTIME NIUMA_SELF_INSTALL MINIZ_NO_ARCHIVE_WRITING_APIS)
 target_link_libraries(niuma-merit PRIVATE niuma-windows-input niuma-windows-storage
+  niuma-windows-metrics
   shell32 gdiplus ole32 bcrypt comdlg32 comctl32 uxtheme uuid niuma-windows-appearance-loader)
 # app.rc embeds the production manifest.
 target_link_options(niuma-merit PRIVATE /MANIFEST:NO)
 
 foreach(target IN ITEMS niuma-input-core niuma-runtime-core niuma-alpha-region
-    niuma-windows-input niuma-windows-storage niuma-windows-composition
+    niuma-windows-input niuma-windows-storage niuma-windows-metrics niuma-windows-composition
     niuma-windows-scenes niuma-windows-appearance-loader niuma-merit)
   target_compile_features(${target} PUBLIC cxx_std_17)
   target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
