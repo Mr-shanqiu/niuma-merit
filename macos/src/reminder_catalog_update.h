@@ -567,7 +567,7 @@ inline bool ValidateCatalogPayload(const std::string& payload,
 
   const JsonValue* items = JsonField(root, "items");
   if (items == nullptr || items->kind != JsonValue::Kind::Array || items->array.empty() ||
-      items->array.size() > 3000) return fail("invalid item list size");
+      items->array.size() > 6400) return fail("invalid item list size");
   std::set<std::string> item_ids;
   std::map<std::string, std::size_t> language_counts;
   for (const JsonValue& value : items->array) {
