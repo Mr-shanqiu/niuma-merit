@@ -224,6 +224,10 @@ static NSString *const kTotal = @"total";
 static NSString *const kDailyTotals = @"dailyTotals";
 static NSString *const kSelectedScene = @"selectedScene";
 static NSString *const kSelectedAppearance = @"selectedAppearanceId";
+// CONTRACT_096 §3/§4.2: appearance_scale defaults to 1.0 and clamps to
+// 0.6..1.8. It is namespaced so the 0.9.5 keyspace stays untouched; when the
+// metrics-096.json sidecar lands this value migrates into prefs.appearance_scale.
+static NSString *const kAppearanceScale = @"niuma.gongde.v096.prefs.appearance_scale";
 // Keep countdown preferences and snapshots independent of merit persistence.
 static NSString *const kOffworkEnabled = @"offwork.enabled";
 static NSString *const kOffworkHour = @"offwork.hour";
@@ -285,11 +289,15 @@ static NSString *DateKeyForDate(NSDate *date) {
   return [formatter stringFromDate:date];
 }
 
-static const CGFloat kUiScale = 0.5;
+// The desktop widget is laid out on a 240x250 design canvas. At 100% the
+// canvas maps to points using kBaseUiScale; F1 lets the user scale that by
+// 60%..180% (appearanceScale), so the effective point scale is the product.
+static const CGFloat kBaseUiScale = 0.5;
 static const CGFloat kWindowWidth = 240;
 static const CGFloat kWindowHeight = 250;
-static const CGFloat kWindowScaleWidth = kWindowWidth * kUiScale;
-static const CGFloat kWindowScaleHeight = kWindowHeight * kUiScale;
+static const CGFloat kMinAppearanceScale = 0.6;
+static const CGFloat kMaxAppearanceScale = 1.8;
+static const CGFloat kDefaultAppearanceScale = 1.0;
 
 static const NSTimeInterval kDefaultStrikeDuration = 0.220;
 static const NSTimeInterval kMinStrikeDuration = 0.120;
@@ -391,6 +399,14 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic) BOOL offworkHasSnapshot;
 @property(nonatomic) BOOL offworkSuspended;
 @property(nonatomic) BOOL offworkLayoutExpanded;
+// F1: user-selectable appearance multiplier (1.0 = 100%), applied to the whole
+// desktop widget. uiScale is the effective design->point scale (base * factor,
+// capped by the visible screen area).
+@property(nonatomic) CGFloat appearanceScale;
+@property(nonatomic, readonly) CGFloat uiScale;
+@property(nonatomic, strong) NSWindow *appearanceScaleWindow;
+@property(nonatomic, strong) NSSlider *appearanceScaleSlider;
+@property(nonatomic, strong) NSTextField *appearanceScaleValueLabel;
 @property(nonatomic) BOOL offworkIsOvertime;
 @property(nonatomic, copy) NSString *offworkDayKey;
 @property(nonatomic, copy) NSString *offworkDisplayLabel;
@@ -534,6 +550,14 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)cancelOffworkSettings:(id)sender;
 - (NSDictionary *)offworkRecordForDay:(NSString *)key;
 - (void)showCalendarDay:(NSString *)key;
+- (CGFloat)maxUiScaleForScreen;
+- (void)resizeAppearanceWindow;
+- (void)applyAppearanceScale:(CGFloat)scale persist:(BOOL)persist;
+- (void)updateAppearanceScaleLabels;
+- (void)showAppearanceScaleSettings:(id)sender;
+- (void)appearanceScaleSliderChanged:(id)sender;
+- (void)resetAppearanceScale:(id)sender;
+- (void)closeAppearanceScaleSettings:(id)sender;
 @end
 
 @implementation MeritView
@@ -687,7 +711,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     self.renderedIdentity=identity; self.renderedScene=self.scene;
   }
   CGFloat offset=(!self.previewOnly && self.controller.offworkEnabled) ? kOffworkRegionHeight : 0;
-  [self.renderer layoutWithScale:kUiScale backing:self.window.backingScaleFactor ?: 2 offset:offset preview:self.previewOnly];
+  [self.renderer layoutWithScale:self.controller.uiScale backing:self.window.backingScaleFactor ?: 2 offset:offset preview:self.previewOnly];
   [self.renderer setCounter:[NSString stringWithFormat:@"%lld",self.controller.todayTotal]
                       label:self.controller.offworkDisplayLabel duration:self.controller.offworkDisplayDuration];
   if(self.pendingAnimationDuration>0) {
@@ -705,7 +729,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   [ctx saveGraphicsState];
   ctx.imageInterpolation = NSImageInterpolationHigh;
   NSAffineTransform *canvas = [NSAffineTransform transform];
-  [canvas scaleBy:kUiScale];
+  [canvas scaleBy:self.controller.uiScale];
   [canvas concat];
 
   // Extend below the existing canvas, leaving every artwork/counter coordinate intact.
@@ -953,7 +977,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 
 - (void)updateOffworkWindowLayout {
   if (!self.window || self.offworkLayoutExpanded == self.offworkEnabled) return;
-  CGFloat delta = kOffworkRegionHeight * kUiScale * (self.offworkEnabled ? 1 : -1);
+  CGFloat delta = kOffworkRegionHeight * self.uiScale * (self.offworkEnabled ? 1 : -1);
   NSRect frame = self.window.frame;
   frame.origin.y -= delta;
   frame.size.height += delta;
@@ -1267,6 +1291,10 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
        ![self.selectedAppearanceId isEqualToString:@"builtin.woodfish"])) {
     self.selectedAppearanceId = @"builtin.woodfish";
   }
+  id storedScale = [defaults objectForKey:kAppearanceScale];
+  CGFloat appearanceScale = storedScale ? [storedScale doubleValue] : kDefaultAppearanceScale;
+  if (!std::isfinite(appearanceScale)) appearanceScale = kDefaultAppearanceScale;
+  self.appearanceScale = std::clamp(appearanceScale, kMinAppearanceScale, kMaxAppearanceScale);
 }
 
 - (void)saveState {
@@ -1277,6 +1305,154 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   [defaults setObject:self.dailyTotals forKey:kDailyTotals];
   self.dirty = NO;
 }
+
+// Largest effective scale that keeps the whole widget inside the active
+// screen's usable area (F1: clamp the upper bound to the screen).
+- (CGFloat)maxUiScaleForScreen {
+  NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
+  if (!screen) return CGFLOAT_MAX;
+  NSRect visible = screen.visibleFrame;
+  const CGFloat margin = 8.0;
+  const CGFloat extra = self.offworkEnabled ? kOffworkRegionHeight : 0.0;
+  const CGFloat byWidth = (NSWidth(visible) - margin * 2) / kWindowWidth;
+  const CGFloat byHeight = (NSHeight(visible) - margin * 2) / (kWindowHeight + extra);
+  return MAX(kBaseUiScale * kMinAppearanceScale, MIN(byWidth, byHeight));
+}
+
+- (CGFloat)uiScale {
+  const CGFloat requested = kBaseUiScale * self.appearanceScale;
+  return MIN(requested, [self maxUiScaleForScreen]);
+}
+
+- (void)resizeAppearanceWindow {
+  if (!self.window) { [self.view setNeedsDisplay:YES]; return; }
+  const CGFloat ui = self.uiScale;
+  const CGFloat extra = self.offworkEnabled ? kOffworkRegionHeight : 0.0;
+  CGFloat width = std::round(kWindowWidth * ui);
+  CGFloat height = std::round((kWindowHeight + extra) * ui);
+  NSRect old = self.window.frame;
+  // Anchor the top-left corner so resizing grows/shrinks toward the screen
+  // center instead of sliding the widget off an edge.
+  const CGFloat top = NSMaxY(old);
+  const CGFloat left = NSMinX(old);
+  NSRect frame = NSMakeRect(left, top - height, width, height);
+  NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
+  if (screen) {
+    NSRect visible = screen.visibleFrame;
+    if (NSWidth(frame) > NSWidth(visible)) frame.size.width = NSWidth(visible);
+    if (NSHeight(frame) > NSHeight(visible)) frame.size.height = NSHeight(visible);
+    // Re-clamp the origin so the resized window stays fully on screen (F1).
+    frame.origin.x = MIN(MAX(NSMinX(visible), frame.origin.x), NSMaxX(visible) - NSWidth(frame));
+    frame.origin.y = MIN(MAX(NSMinY(visible), frame.origin.y), NSMaxY(visible) - NSHeight(frame));
+  }
+  self.offworkLayoutExpanded = self.offworkEnabled;
+  [self.window setFrame:frame display:YES];
+  [self.view setFrameSize:frame.size];
+  [self.view setNeedsDisplay:YES];
+}
+
+- (void)updateAppearanceScaleLabels {
+  if (!self.appearanceScaleValueLabel) return;
+  const NSInteger requested = (NSInteger)std::lround(self.appearanceScale * 100.0);
+  const NSInteger effective = (NSInteger)std::lround((self.uiScale / kBaseUiScale) * 100.0);
+  self.appearanceScaleValueLabel.stringValue = effective < requested - 1
+      ? [NSString stringWithFormat:UiText(@"%ld%%（屏幕限制 %ld%%）", @"%ld%% (screen limit %ld%%)"),
+            (long)requested, (long)effective]
+      : [NSString stringWithFormat:@"%ld%%", (long)requested];
+}
+
+- (void)applyAppearanceScale:(CGFloat)scale persist:(BOOL)persist {
+  if (!std::isfinite(scale)) scale = kDefaultAppearanceScale;
+  scale = std::clamp(scale, kMinAppearanceScale, kMaxAppearanceScale);
+  self.appearanceScale = scale;
+  if (persist) [MeritPreferences() setObject:@(scale) forKey:kAppearanceScale];
+  [self updateAppearanceScaleLabels];
+  [self resizeAppearanceWindow];
+}
+
+- (void)appearanceScaleSliderChanged:(id)sender {
+  (void)sender;
+  [self applyAppearanceScale:self.appearanceScaleSlider.doubleValue persist:YES];
+}
+
+- (void)resetAppearanceScale:(id)sender {
+  (void)sender;
+  self.appearanceScaleSlider.doubleValue = kDefaultAppearanceScale;
+  [self applyAppearanceScale:kDefaultAppearanceScale persist:YES];
+}
+
+- (void)closeAppearanceScaleSettings:(id)sender {
+  (void)sender;
+  [self.appearanceScaleWindow close];
+}
+
+- (void)showAppearanceScaleSettings:(id)sender {
+  (void)sender;
+  if (!self.appearanceScaleWindow) {
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 210)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+        backing:NSBackingStoreBuffered defer:NO];
+    window.title = UiText(@"形象大小", @"Appearance Size");
+    window.releasedWhenClosed = NO;
+    window.delegate = self;
+    if (gIsolatedAcceptance) window.restorable = NO;
+    NSView *content = window.contentView;
+    NSTextField *title = [NSTextField labelWithString:UiText(@"形象大小（拖动实时预览）", @"Appearance size (live preview)")];
+    title.frame = NSMakeRect(24, 168, 280, 22);
+    [content addSubview:title];
+    self.appearanceScaleValueLabel = [NSTextField labelWithString:@"100%"];
+    self.appearanceScaleValueLabel.frame = NSMakeRect(300, 168, 96, 22);
+    self.appearanceScaleValueLabel.alignment = NSTextAlignmentRight;
+    self.appearanceScaleValueLabel.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
+    [content addSubview:self.appearanceScaleValueLabel];
+    NSSlider *slider = [[NSSlider alloc] initWithFrame:NSMakeRect(24, 126, 372, 26)];
+    slider.minValue = kMinAppearanceScale;
+    slider.maxValue = kMaxAppearanceScale;
+    slider.doubleValue = self.appearanceScale;
+    slider.continuous = YES;
+    slider.numberOfTickMarks = 13;  // 60%..180% in 10% steps (cosmetic only)
+    slider.allowsTickMarkValuesOnly = NO;
+    slider.tickMarkPosition = NSTickMarkPositionBelow;
+    slider.target = self;
+    slider.action = @selector(appearanceScaleSliderChanged:);
+    slider.accessibilityLabel = UiText(@"形象大小", @"Appearance size");
+    self.appearanceScaleSlider = slider;
+    [content addSubview:slider];
+    NSTextField *minLabel = [NSTextField labelWithString:UiText(@"60% 最小", @"60% Smallest")];
+    minLabel.frame = NSMakeRect(24, 104, 120, 16);
+    minLabel.font = [NSFont systemFontOfSize:11];
+    minLabel.textColor = NMUiMuted();
+    [content addSubview:minLabel];
+    NSTextField *maxLabel = [NSTextField labelWithString:UiText(@"180% 最大", @"180% Largest")];
+    maxLabel.frame = NSMakeRect(276, 104, 120, 16);
+    maxLabel.font = [NSFont systemFontOfSize:11];
+    maxLabel.textColor = NMUiMuted();
+    maxLabel.alignment = NSTextAlignmentRight;
+    [content addSubview:maxLabel];
+    NSTextField *hint = [NSTextField wrappingLabelWithString:UiText(
+        @"窗口、形象和气泡一起等比缩放；超出屏幕可用区域时会限制大小并重新放进屏幕。仅主窗口变化，日历与设置窗口保持原尺寸。",
+        @"The window, artwork and bubble scale together. On small screens the size is capped and kept on-screen. Only the main widget changes; the calendar and settings windows keep their size.")];
+    hint.frame = NSMakeRect(24, 52, 372, 44);
+    hint.font = [NSFont systemFontOfSize:12];
+    hint.textColor = NMUiMuted();
+    [content addSubview:hint];
+    NSButton *reset = [NSButton buttonWithTitle:UiText(@"恢复默认", @"Reset") target:self action:@selector(resetAppearanceScale:)];
+    reset.frame = NSMakeRect(24, 14, 110, 30);
+    [content addSubview:reset];
+    NSButton *done = [NSButton buttonWithTitle:UiText(@"完成", @"Done") target:self action:@selector(closeAppearanceScaleSettings:)];
+    done.frame = NSMakeRect(300, 14, 96, 30);
+    done.keyEquivalent = @"\r";
+    [content addSubview:done];
+    self.appearanceScaleWindow = window;
+    NMUiWindow(window);
+    [window center];
+  }
+  self.appearanceScaleSlider.doubleValue = self.appearanceScale;
+  [self updateAppearanceScaleLabels];
+  [NSApp activateIgnoringOtherApps:YES];
+  [self.appearanceScaleWindow makeKeyAndOrderFront:nil];
+}
+
 
 - (void)ensureCurrentDay {
   NSString *today = DateKeyForDate(NSDate.date);
@@ -1528,7 +1704,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
           reminderStartupDate ? reminderStartupDate : ""));
   [self configureLaunchAtLogin];
 
-  self.view = [[MeritView alloc] initWithFrame:NSMakeRect(0, 0, kWindowScaleWidth, kWindowScaleHeight)];
+  self.view = [[MeritView alloc] initWithFrame:NSMakeRect(0, 0, kWindowWidth * self.uiScale, kWindowHeight * self.uiScale)];
   self.view.controller = self;
   self.view.scene = self.selectedScene;
   NSString *restoredAppearanceId = [self.selectedAppearanceId copy];
@@ -1561,8 +1737,8 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   if (restoredFrame) {
     NSRect frame = self.window.frame;
     // Saved expanded frames use a lower origin; normalize without launch-to-launch drift.
-    frame.origin.y += MAX(0.0, NSHeight(frame) - kWindowScaleHeight);
-    frame.size = NSMakeSize(kWindowScaleWidth, kWindowScaleHeight);
+    frame.origin.y += MAX(0.0, NSHeight(frame) - kWindowHeight * self.uiScale);
+    frame.size = NSMakeSize(kWindowWidth * self.uiScale, kWindowHeight * self.uiScale);
     [self.window setFrame:frame display:NO];
   }
   BOOL frameIsVisible = NO;
@@ -1575,8 +1751,8 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   }
   if (!restoredFrame || !frameIsVisible) {
     NSScreen *screen = NSScreen.mainScreen;
-    [self.window setFrameOrigin:NSMakePoint(NSMaxX(screen.visibleFrame) - 280 * kUiScale,
-                                           NSMaxY(screen.visibleFrame) - 270 * kUiScale)];
+    [self.window setFrameOrigin:NSMakePoint(NSMaxX(screen.visibleFrame) - 280 * self.uiScale,
+                                           NSMaxY(screen.visibleFrame) - 270 * self.uiScale)];
   }
   id<NMMeritPreferences> visibilityDefaults = MeritPreferences();
   _visibility.autoHideFullscreen = [visibilityDefaults objectForKey:@"AutoHideFullscreen"] == nil ||
@@ -2288,6 +2464,12 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)windowWillClose:(NSNotification *)notification {
   // Closing the settings window discards its controls, never commits their values.
   if (notification.object == self.offworkSettingsWindow) return;
+  if (notification.object == self.appearanceScaleWindow) {
+    // The slider already persisted each change; flush so the choice survives restart.
+    [MeritPreferences() setObject:@(self.appearanceScale) forKey:kAppearanceScale];
+    if (!gIsolatedAcceptance) [NSUserDefaults.standardUserDefaults synchronize];
+    return;
+  }
   if (notification.object != self.countStatusWindow) return;
   [self.countStatusTimer invalidate];
   self.countStatusTimer = nil;
@@ -2650,6 +2832,11 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
                                                      action:@selector(showAppearancePicker:)
                                               keyEquivalent:@""];
   appearance.target = self;
+  NSMenuItem *appearanceSize = [[NSMenuItem alloc]
+      initWithTitle:UiText(@"形象大小…", @"Appearance Size…")
+             action:@selector(showAppearanceScaleSettings:)
+      keyEquivalent:@""];
+  appearanceSize.target = self;
   NSMenuItem *calendar = [[NSMenuItem alloc]
       initWithTitle:UiText(@"功德日历…", @"Merit Calendar…")
              action:@selector(showMeritCalendar:)
@@ -2678,12 +2865,12 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
       action:@selector(toggleAutoHideFullscreen:) keyEquivalent:@""];
   autoHide.target = self;
   autoHide.state = _visibility.autoHideFullscreen ? NSControlStateValueOn : NSControlStateValueOff;
-  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, calendar, offwork, launchAtLogin, about, quit];
+  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, offwork, launchAtLogin, about, quit];
   for (NSMenuItem *item in entries) [menu addItem:item];
   NSFont *menuFont = [NSFont systemFontOfSize:14];
   menu.font = menuFont;
   if (@available(macOS 11.0, *)) {
-    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"calendar", @"clock", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
+    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"clock", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
     for (NSUInteger index = 0; index < entries.count; ++index) {
       NSImage *image = [NSImage imageWithSystemSymbolName:symbols[index] accessibilityDescription:nil];
       image.size = NSMakeSize(16, 16); ((NSMenuItem *)entries[index]).image = image;
