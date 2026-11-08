@@ -30,5 +30,8 @@ windows/tests/run_tests.sh
   （避免 MSVC 不支持 `unsigned __int128`，结果逐位相同）。
 - `scroll_tick_counter.h` 是 Windows 专属：把 macOS 的像素距离换成
   `WHEEL_DELTA=120` 的整数增量，手势边界由平台调用方传入。
+- 对拍记录：`macos/tests/{work_encourager,merit_curve,medals}_test.cpp` 不改一行，
+  用 `-I windows/src/client/core` 编译到 Windows 头也全部 PASS；本目录的测试是
+  在此基础上扩充边界用例。
 - 本目录不参与 `windows/CMakeLists.txt` 的正式构建；后续可加 `NIUMA_BUILD_TESTS`
   选项接入 CTest/CI（见 `windows/PHASE2_PLAN.md`）。
