@@ -2287,16 +2287,20 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   if (message.length == 0) return;
   NSScreen *screen = self.window.screen ?: NSScreen.mainScreen;
   if (!screen) return;
-  const CGFloat width = 260;
-  NSFont *font = [NSFont systemFontOfSize:15 weight:NSFontWeightMedium];
+  // F1: the humor bubble scales with the rest of the desktop widget. The factor
+  // is the user appearance multiplier (1.0 at the default 100%), so the default
+  // bubble is unchanged while 60%..180% keeps the bubble in proportion.
+  const CGFloat scale = self.appearanceScale;
+  const CGFloat width = 260 * scale;
+  NSFont *font = [NSFont systemFontOfSize:15 * scale weight:NSFontWeightMedium];
   NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
-  paragraph.minimumLineHeight = 22; paragraph.maximumLineHeight = 22;
+  paragraph.minimumLineHeight = 22 * scale; paragraph.maximumLineHeight = 22 * scale;
   NSDictionary *attributes = @{NSFontAttributeName: font,
       NSForegroundColorAttributeName:NMUiInk(), NSParagraphStyleAttributeName:paragraph};
-  NSRect textBounds = [message boundingRectWithSize:NSMakeSize(width - 60, CGFLOAT_MAX)
+  NSRect textBounds = [message boundingRectWithSize:NSMakeSize(width - 60 * scale, CGFLOAT_MAX)
       options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
       attributes:attributes];
-  const CGFloat height = std::max(64.0, std::ceil(NSHeight(textBounds)) + 40.0);
+  const CGFloat height = std::max(64.0 * scale, std::ceil(NSHeight(textBounds)) + 40.0 * scale);
   NSPanel *panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
       styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
       backing:NSBackingStoreBuffered defer:NO];
@@ -2314,15 +2318,15 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   panel.contentView = content;
   NSTextField *label = [NSTextField wrappingLabelWithString:message];
   label.attributedStringValue = [[NSAttributedString alloc] initWithString:message attributes:attributes];
-  label.frame = NSMakeRect(20, 20, width - 60, height - 40);
+  label.frame = NSMakeRect(20 * scale, 20 * scale, width - 60 * scale, height - 40 * scale);
   label.font = font;
   label.maximumNumberOfLines = 0;
   label.lineBreakMode = NSLineBreakByWordWrapping;
   [content addSubview:label];
   NSButton *close = [NSButton buttonWithTitle:@"×" target:self action:@selector(dismissReminder:)];
-  close.frame = NSMakeRect(width - 36, height - 36, 24, 24);
+  close.frame = NSMakeRect(width - 36 * scale, height - 36 * scale, 24 * scale, 24 * scale);
   close.bordered = NO;
-  close.font = [NSFont systemFontOfSize:16 weight:NSFontWeightRegular];
+  close.font = [NSFont systemFontOfSize:16 * scale weight:NSFontWeightRegular];
   if (@available(macOS 10.14, *)) close.contentTintColor = NMUiMuted();
   close.accessibilityLabel = UiText(@"关闭提醒", @"Close reminder");
   [content addSubview:close];
