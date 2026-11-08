@@ -391,7 +391,7 @@ inline bool DecodeBase64(const std::string& encoded, std::vector<std::uint8_t>* 
   static constexpr char alphabet[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   if (output == nullptr || encoded.empty() || encoded.size() % 4 != 0 ||
-      encoded.size() > 2 * 1024 * 1024) return false;
+      encoded.size() > 4 * 1024 * 1024) return false;
   std::vector<std::uint8_t> decoded;
   decoded.reserve(encoded.size() / 4 * 3);
   for (std::size_t i = 0; i < encoded.size(); i += 4) {
