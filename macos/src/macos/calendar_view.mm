@@ -61,8 +61,7 @@
 - (void)drawRect:(NSRect)dirtyRect {
   (void)dirtyRect;[NSColor.whiteColor setFill];NSRectFill(self.bounds);[self refreshNavigation];
   NSColor *ink=NMUiInk(),*muted=NMUiMuted(),*accent=NMUiMeritGold();
-  NSString *title=IsChineseUI() ? [NSString stringWithFormat:@"%ld年%ld月",(long)self.year,(long)self.month]
-                               : [NSString stringWithFormat:@"%ld / %02ld",(long)self.year,(long)self.month];
+  NSString *title=[NSString stringWithFormat:UiText(@"%ld年%ld月",@"%ld / %02ld"),(long)self.year,(long)self.month];
   [self drawText:title rect:NSMakeRect(65,19,220,34) size:25 color:ink weight:NSFontWeightBold];
   NSString *prefix=[NSString stringWithFormat:@"%04ld-%02ld-",(long)self.year,(long)self.month];
   unsigned long long total=0;
@@ -76,7 +75,7 @@
   [accent setFill];NSRectFill(NSMakeRect(26,164,32,3));
   [self drawText:UiText(@"累计功德",@"Lifetime merit") rect:NSMakeRect(535,96,160,20) size:12 color:muted weight:NSFontWeightRegular];
   [self drawText:[numbers stringFromNumber:@(self.controller.total)] rect:NSMakeRect(495,120,200,34) size:25 color:muted weight:NSFontWeightSemibold];
-  NSArray *week=IsChineseUI()?@[@"一",@"二",@"三",@"四",@"五",@"六",@"日"]:@[@"MON",@"TUE",@"WED",@"THU",@"FRI",@"SAT",@"SUN"];
+  NSArray *week=NMWeekdayLabels();
   for (NSInteger c=0;c<7;c++) [self drawText:week[c] rect:NSMakeRect(kCalendarLeft+c*kCalendarCellWidth+38,190,52,20) size:12 color:muted weight:NSFontWeightRegular];
   NSInteger offset=([RecordCalendar() component:NSCalendarUnitWeekday fromDate:self.firstDate]+5)%7;
   NSInteger days=[RecordCalendar() rangeOfUnit:NSCalendarUnitDay inUnit:NSCalendarUnitMonth forDate:self.firstDate].length;
@@ -102,8 +101,7 @@
     NSDictionary *record=[self.controller offworkRecordForDay:key];
     if(record) {
       long long seconds=[record[@"seconds"] longLongValue];
-      NSString *ot=IsChineseUI() ? [NSString stringWithFormat:@"加班%lld时%lld分",seconds/3600,(seconds/60)%60]
-                                : [NSString stringWithFormat:@"OT %lldh %lldm",seconds/3600,(seconds/60)%60];
+      NSString *ot=[NSString stringWithFormat:UiText(@"加班%lld时%lld分",@"OT %lldh %lldm"),seconds/3600,(seconds/60)%60];
       [self drawText:ot rect:NSMakeRect(cell.origin.x+12,cell.origin.y+44,82,15) size:9 color:accent weight:NSFontWeightRegular];
     }
     NSButton *button=self.dayButtons[d-1];button.frame=cell;

@@ -40,6 +40,7 @@
 #import "ui_theme.h"
 #import "installation_paths.h"
 #import "metrics_store.h"
+#import "ui_text_table.h"
 
 // Explicit acceptance launches never consult the user's product preferences.
 // The pack root must be an empty, private directory supplied by the runner;
@@ -250,20 +251,101 @@ static constexpr CGFloat kCalendarCellHeight = 64.0;
 static constexpr CGFloat kArtworkTop = 170.0;
 static constexpr CGFloat kFeedbackY = 174.0;
 static constexpr CGFloat kCounterY = 210.0;
-static BOOL IsChineseUI(void) {
-  NSString *override = NSProcessInfo.processInfo.environment[@"NIUMA_UI_LANGUAGE"];
-  if ([override isEqualToString:@"zh"]) return YES;
-  if ([override isEqualToString:@"en"]) return NO;
-  NSString *language = NSLocale.preferredLanguages.firstObject.lowercaseString;
-  return [language hasPrefix:@"zh"];
+// CONTRACT_096 §10: 支持语言 zh-Hans / zh-Hant / ja / en，未知回落 zh-Hans。
+typedef NS_ENUM(NSInteger, NMUiLanguage) {
+  NMUiLanguageSimplifiedChinese = 0,
+  NMUiLanguageTraditionalChinese = 1,
+  NMUiLanguageJapanese = 2,
+  NMUiLanguageEnglish = 3,
+};
+
+// 语言归一化统一走 S0 的 LocaleFromLanguageTag（reminder_policy.h）：
+// ja* → 日语；en* → 英语；zh + Hant/-TW/-HK/-MO → 繁中；其余（含未知/空）→ 简中。
+static NMUiLanguage NMLanguageFromTag(NSString *tag) {
+  if (tag.length == 0) return NMUiLanguageSimplifiedChinese;
+  switch (niuma::reminder::LocaleFromLanguageTag(tag.UTF8String)) {
+    case niuma::reminder::Locale::ChineseTraditional: return NMUiLanguageTraditionalChinese;
+    case niuma::reminder::Locale::Japanese: return NMUiLanguageJapanese;
+    case niuma::reminder::Locale::English: return NMUiLanguageEnglish;
+    case niuma::reminder::Locale::Chinese: break;
+  }
+  return NMUiLanguageSimplifiedChinese;
 }
 
+// UI 语言只解析一次：环境变量 NIUMA_UI_LANGUAGE（验收/测试用，接受同一套标签，
+// 兼容旧值 zh/en）优先，否则取系统首选语言。
+static NMUiLanguage NMCurrentUiLanguage(void) {
+  static NMUiLanguage resolved = NMUiLanguageSimplifiedChinese;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSString *override = NSProcessInfo.processInfo.environment[@"NIUMA_UI_LANGUAGE"];
+    resolved = NMLanguageFromTag(override.length > 0 ? override
+                                                   : NSLocale.preferredLanguages.firstObject);
+  });
+  return resolved;
+}
+
+// L2 多语查表（ui_text_table.h）。键 = 简中原文；zh-Hant / ja 缺词条时回落简中。
+// 词条覆盖率由 scripts/check-ui-strings.py 校验。
+static NSDictionary<NSString *, NSString *> *NMUiTextTable(NMUiLanguage language) {
+  static NSDictionary<NSString *, NSString *> *zhHant;
+  static NSDictionary<NSString *, NSString *> *ja;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSMutableDictionary *hant = [NSMutableDictionary dictionaryWithCapacity:kNMUiTextEntryCount];
+    NSMutableDictionary *japanese = [NSMutableDictionary dictionaryWithCapacity:kNMUiTextEntryCount];
+    for (std::size_t index = 0; index < kNMUiTextEntryCount; ++index) {
+      const NMUiTextEntry &entry = kNMUiTextEntries[index];
+      hant[@(entry.zhHans)] = @(entry.zhHant);
+      japanese[@(entry.zhHans)] = @(entry.ja);
+    }
+    zhHant = hant;
+    ja = japanese;
+  });
+  return language == NMUiLanguageTraditionalChinese ? zhHant : ja;
+}
+
+// UiText(简中, English)：zh-Hans 取第一参数；en 取第二参数；zh-Hant / ja 查表。
 static NSString *UiText(NSString *chinese, NSString *english) {
-  return IsChineseUI() ? chinese : english;
+  switch (NMCurrentUiLanguage()) {
+    case NMUiLanguageEnglish: return english;
+    case NMUiLanguageTraditionalChinese:
+    case NMUiLanguageJapanese:
+      return NMUiTextTable(NMCurrentUiLanguage())[chinese] ?: chinese;
+    case NMUiLanguageSimplifiedChinese: return chinese;
+  }
+  return chinese;
+}
+
+// 周标签（x 轴，索引 0 = 周一）：zh-Hans/zh-Hant 一..日；ja 月..日；en MON..SUN。
+static NSArray<NSString *> *NMWeekdayLabels(void) {
+  switch (NMCurrentUiLanguage()) {
+    case NMUiLanguageJapanese:
+      return @[ @"月", @"火", @"水", @"木", @"金", @"土", @"日" ];
+    case NMUiLanguageEnglish:
+      return @[ @"MON", @"TUE", @"WED", @"THU", @"FRI", @"SAT", @"SUN" ];
+    case NMUiLanguageSimplifiedChinese:
+    case NMUiLanguageTraditionalChinese:
+      break;
+  }
+  return @[ @"一", @"二", @"三", @"四", @"五", @"六", @"日" ];
+}
+
+// 内容语言（reminder catalog）与 UI 语言同一映射（CONTRACT_096 §10）：
+// LocaleLanguage(NMReminderLocale()) 即规范内容语言标签；旧 zh-CN 包由
+// CanonicalContentLanguage 在 EligibleItems 内与 zh-Hans 互认（S0 规则）。
+static niuma::reminder::Locale NMReminderLocale(void) {
+  switch (NMCurrentUiLanguage()) {
+    case NMUiLanguageTraditionalChinese: return niuma::reminder::Locale::ChineseTraditional;
+    case NMUiLanguageJapanese: return niuma::reminder::Locale::Japanese;
+    case NMUiLanguageEnglish: return niuma::reminder::Locale::English;
+    case NMUiLanguageSimplifiedChinese: break;
+  }
+  return niuma::reminder::Locale::Chinese;
 }
 
 // CONTRACT_096 §10: 规范语言标签（zh-Hans / zh-Hant / ja / en），无法识别回落 zh-Hans。
-// 与 IsChineseUI 的 zh/en 判定保持一致，仅补充繁中与日语区分，供货币默认使用。
+// 与 NMUiLanguage 的判定保持一致（同一套归一化规则），供货币默认等场景使用。
 static NSString *CurrentUiLanguageTag(void) {
   NSString *override = NSProcessInfo.processInfo.environment[@"NIUMA_UI_LANGUAGE"];
   if ([override isEqualToString:@"zh"]) return @"zh-Hans";
@@ -2240,13 +2322,21 @@ static NSString *NMMedalIcon(int tier) {
     model.medalTier = [NSString stringWithUTF8String:niuma::medal::TierName(tier)];
     model.meritPeriod = model.medalPeriod;
     model.meritValue = [self medalPeriodValue:period];
-    NSString *periodName = IsChineseUI() ? NMMedalPeriodLabel(period)
-                                         : NMMedalPeriodEnglish(period);
-    model.subtitle = [NSString stringWithFormat:UiText(@"%@%@牌", @"%@ %@"),
-        periodName, NMMedalTierLabel(tier)];
-    if (!IsChineseUI())
-      model.subtitle = [NSString stringWithFormat:@"%@ %@", NMMedalPeriodEnglish(period),
-          NMMedalTierEnglish(tier)];
+    NSString *periodName = NMMedalPeriodLabel(period);
+    // zh-Hans/zh-Hant:「月金牌」；ja:「月の金」；en:「Monthly Gold」。
+    switch (NMCurrentUiLanguage()) {
+      case NMUiLanguageSimplifiedChinese:
+      case NMUiLanguageTraditionalChinese:
+        model.subtitle = [NSString stringWithFormat:@"%@%@牌", periodName, NMMedalTierLabel(tier)];
+        break;
+      case NMUiLanguageJapanese:
+        model.subtitle = [NSString stringWithFormat:@"%@の%@", periodName, NMMedalTierLabel(tier)];
+        break;
+      case NMUiLanguageEnglish:
+        model.subtitle = [NSString stringWithFormat:@"%@ %@", NMMedalPeriodEnglish(period),
+            NMMedalTierEnglish(tier)];
+        break;
+    }
   }
   if (self.encouragerActive) {
     model.moneyDisplay = self.encouragerDisplayAmount;
@@ -3271,7 +3361,7 @@ static NSString *NMMedalIcon(int tier) {
   NSDateComponents *components = [calendar components:(NSCalendarUnitYear | NSCalendarUnitMonth |
       NSCalendarUnitDay | NSCalendarUnitHour | NSCalendarUnitMinute) fromDate:now];
   niuma::reminder::SelectionContext context;
-  context.locale = IsChineseUI() ? niuma::reminder::Locale::Chinese : niuma::reminder::Locale::English;
+  context.locale = NMReminderLocale();
   NSString *country = NSLocale.currentLocale.countryCode.uppercaseString ?: @"";
   static NSSet<NSString *> *supportedRegions;
   static dispatch_once_t regionOnce;
@@ -4146,13 +4236,12 @@ static NSString *NMMedalIcon(int tier) {
     viewName = @"day";
   } else if (self.curveModeControl.selectedSegment == 1) {
     std::vector<std::string> keys = niuma::curve::WeekDayKeys(year, month, day);
-    NSArray *zh = @[ @"一", @"二", @"三", @"四", @"五", @"六", @"日" ];
-    NSArray *en = @[ @"MON", @"TUE", @"WED", @"THU", @"FRI", @"SAT", @"SUN" ];
+    NSArray *weekdays = NMWeekdayLabels();
     for (int i = 0; i < 7; ++i) {
       NSString *k = [NSString stringWithUTF8String:keys[(std::size_t)i].c_str()];
       unsigned long long v = [self.dailyTotals[k] unsignedLongLongValue];
       [points addObject:@(v)];
-      [labels addObject:(IsChineseUI() ? zh : en)[i]];
+      [labels addObject:weekdays[i]];
       total = (v > ULLONG_MAX - total) ? ULLONG_MAX : total + v;
     }
     subtitle = UiText(@"本周每日功德（周一–周日）", @"Daily merit this week (Mon–Sun)");

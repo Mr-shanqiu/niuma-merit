@@ -120,9 +120,8 @@ static void NMCurveDrawText(NSString *text, NSRect rect, CGFloat size, NSColor *
   NSMutableArray<NSString *> *labels = [NSMutableArray array];
   if (self.mode == 1) {
     keys = niuma::curve::WeekDayKeys(year, month, day);
-    NSArray *zh = @[ @"一", @"二", @"三", @"四", @"五", @"六", @"日" ];
-    NSArray *en = @[ @"MON", @"TUE", @"WED", @"THU", @"FRI", @"SAT", @"SUN" ];
-    for (int i = 0; i < 7; ++i) [labels addObject:(IsChineseUI() ? zh : en)[i]];
+    NSArray *weekdays = NMWeekdayLabels();
+    for (int i = 0; i < 7; ++i) [labels addObject:weekdays[i]];
   } else {
     keys = niuma::curve::MonthDayKeys(year, month);
     for (std::size_t i = 0; i < keys.size(); ++i)
