@@ -430,9 +430,9 @@ inline bool SafeKeyId(const std::string& key_id) {
 inline bool ParseCatalogEnvelope(const std::string& bytes, CatalogEnvelope* envelope,
                                  std::string* error) {
   auto fail = [error](const char* reason) { if (error) *error = reason; return false; };
-  if (bytes.empty() || bytes.size() > 2 * 1024 * 1024) return fail("catalog envelope size is invalid");
+  if (bytes.empty() || bytes.size() > 4 * 1024 * 1024) return fail("catalog envelope size is invalid");
   JsonValue outer;
-  if (!JsonParser(bytes).Parse(&outer, error, 4, 2 * 1024 * 1024)) return false;
+  if (!JsonParser(bytes).Parse(&outer, error, 4, 4 * 1024 * 1024)) return false;
   if (!JsonExactFields(outer, {"format", "key_id", "payload_b64", "signature_b64"}))
     return fail("catalog envelope fields are invalid");
   std::string format, key_id, payload_b64, signature_b64;
@@ -444,7 +444,7 @@ inline bool ParseCatalogEnvelope(const std::string& bytes, CatalogEnvelope* enve
   CatalogEnvelope candidate;
   candidate.key_id = std::move(key_id);
   std::vector<std::uint8_t> payload;
-  if (!DecodeBase64(payload_b64, &payload) || payload.empty() || payload.size() > 1024 * 1024)
+  if (!DecodeBase64(payload_b64, &payload) || payload.empty() || payload.size() > 2 * 1024 * 1024)
     return fail("invalid payload encoding or size");
   if (!DecodeBase64(signature_b64, &candidate.signature) || candidate.signature.size() != 64)
     return fail("signature must be 64 raw bytes");
@@ -470,7 +470,7 @@ inline bool ValidateCatalogPayload(const std::string& payload,
                                    std::string* error) {
   auto fail = [error](const char* reason) { if (error) *error = reason; return false; };
   JsonValue root;
-  if (!JsonParser(payload).Parse(&root, error, 12)) return false;
+  if (!JsonParser(payload).Parse(&root, error, 12, 2 * 1024 * 1024)) return false;
   if (!JsonFieldsWithOptional(root, {"schema_version", "catalog_id", "content_version",
       "calendar_version", "calendar_year_start", "calendar_year_end", "languages",
       "items", "calendars"}, {"min_client_version"}))
