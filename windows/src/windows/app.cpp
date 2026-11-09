@@ -6812,9 +6812,10 @@ int WINAPI wWinMain(
   gState.selectedScene = selectedScene >= 0 && selectedScene <= 4
       ? static_cast<MeritScene>(selectedScene)
       : MeritScene::Woodfish;
-  // F2：鼓励器已启用且未选外部形象包时，固定显示场景 4（builtin.encourager）。
-  if (gState.encouragerActive) gState.selectedScene = MeritScene::Encourager;
   gState.selectedPackId = ReadSelectedPackId();
+  // F2：鼓励器已启用且未选外部形象包时，固定显示场景 4（builtin.encourager）。
+  if (gState.encouragerActive && gState.selectedPackId.empty())
+    gState.selectedScene = MeritScene::Encourager;
   if (!gState.selectedPackId.empty() && gAppearanceCatalog.Find(gState.selectedPackId) == nullptr) {
     niuma::ui::Message(nullptr,
         UiText(L"上次使用的形象文件缺失或未通过校验，暂时显示木鱼。原文件、功德和日历不删除；可重新导入原包。",

@@ -26,6 +26,28 @@
 
 ---
 
+## 0b. 第二批 2B 已交付（F4 / F2 / F3 / F1）
+
+| 功能 | 入口 | 实现位置 | 侧车 |
+| --- | --- | --- | --- |
+| F4 牛马曲线 | 右键菜单「牛马曲线…」 | `curve_view.h/.cpp`（日 96 桶 / 周 / 月，未采集底纹，PNG 导出） | `curve.days`（既有） |
+| F2 上班鼓励器 | 右键菜单「上班鼓励器…」/ 场景 4 | `app.cpp` + `widget_text_cache` 新增 `Encourager` 槽 + GDI+ 底栏/插画 | `encourager` 块 |
+| F3 勋章与成就 | 右键菜单「勋章与成就…」 | `medal_view.h/.cpp`（3×3 墙 + 集齐，默认收起）+ 分享图 | `medals` 块（新增 `last_period`） |
+| F1 形象大小 | 右键菜单「形象大小…」 | `app.cpp` trackbar 60–180%，整体等比 + 可用区钳制 | `prefs.appearance_scale` |
+
+要点：
+
+- 分享图统一走 `ShareCardModel`（`curve_view.h`，CONTRACT §8.1 白名单）+ `ExportSharePng`，
+  单张 PNG、无文本块/EXIF，图内仅产品名/版本/日期与派生数值。
+- 历史勋章静默补授的幂等守门为 `migration.medals_backfilled`（先置位再补授）。
+- 主窗口尺寸统一由 `WindowPixelWidth()/WindowPixelHeight()` 计算，缩放后再
+  `ClampWindowSizeToWorkArea()`；气泡与角色纹理随 `pixelScale` 等比。
+- 已知限制：D3D11 composition 运行时仅内置 `builtin.woodfish` 场景纹理；场景 4 的
+  鼓励器插画目前只在 GDI+ 分层回退路径绘制，composition 路径显示底栏文本与进度条。
+  如需 composition 插画，需要新增一种 `AppearanceSceneKind`（后续批次）。
+
+---
+
 ## 1. 施工原则
 
 1. **先落盘、后采集、再 UI**：侧车存储是 F2/F3/F4 的共同地基，先做；否则后面
