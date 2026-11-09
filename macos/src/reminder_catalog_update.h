@@ -338,10 +338,10 @@ inline bool ValidCatalogId(const std::string& id) {
 }
 
 // Content languages accepted by the 0.9.6 loader. Legacy packs used "zh-CN" for
-// Simplified Chinese; new packs may use BCP-47 "zh-Hans"/"zh-Hant"/"ja" as well.
+// Simplified Chinese; new packs may use BCP-47 "zh-Hans"/"zh-Hant"/"ja"/"ko" as well.
 inline bool SupportedContentLanguage(const std::string& language) {
   return language == "zh-CN" || language == "zh-Hans" || language == "zh-Hant" ||
-      language == "ja" || language == "en";
+      language == "ja" || language == "en" || language == "ko";
 }
 
 // Per-item text budget in UTF-8 code points. Mirrors the original 80/160 split:

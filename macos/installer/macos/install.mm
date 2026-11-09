@@ -16,48 +16,41 @@ enum NMInstallerLanguage {
   kNMInstallerLangTraditionalChinese,
   kNMInstallerLangJapanese,
   kNMInstallerLangEnglish,
+  kNMInstallerLangKorean,
 };
 
 struct NMInstallerTextEntry {
   const char *zhHans;
   const char *zhHant;
   const char *ja;
+  const char *ko;
 };
 
 // clang-format off
 static const NMInstallerTextEntry kNMInstallerTexts[] = {
-    {"安装牛马电子功德", "安裝牛馬電子功德", "牛馬電子功徳をインストール"},
-    {"正在安装牛马电子功德", "正在安裝牛馬電子功德", "牛馬電子功徳をインストールしています"},
-    {"装好后自动打开，再按提示开启输入监控。", "裝好後自動打開，再按提示開啟輸入監控。",
-     "インストール後に自動で開き、案内に従って入力監視を許可してください。"},
-    {"安装位置：%@", "安裝位置：%@", "インストール先：%@"},
-    {"安装并打开", "安裝並打開", "インストールして開く"},
-    {"安装后约 %@ · 本地运行，无需联网", "安裝後約 %@ · 本地運行，無需聯網",
-     "インストール後約 %@ · ローカル動作、通信不要"},
-    {"打开应用", "打開應用", "アプリを開く"},
-    {"重新安装", "重新安裝", "再インストール"},
-    {"已安装，暂未能打开", "已安裝，暫未能打開", "インストール済みですが、開けませんでした"},
-    {"暂未完成安装", "暫未完成安裝", "インストールが完了していません"},
-    {"知道了", "知道了", "了解しました"},
-    {"安装文件校验失败，请重新下载官方安装包。", "安裝檔案校驗失敗，請重新下載官方安裝包。",
-     "インストールファイルの検証に失敗しました。公式インストーラーを再度ダウンロードしてください。"},
-    {"先退出正在运行的牛马", "先退出正在運行的牛馬", "実行中の NiuMa を先に終了してください"},
-    {"退出后继续安装，你的功德、形象和设置都会保留。", "退出後繼續安裝，你的功德、形象和設定都會保留。",
-     "終了後にインストールを続けます。功徳・キャラ・設定はすべて保持されます。"},
-    {"退出并安装", "退出並安裝", "終了してインストール"},
-    {"取消", "取消", "キャンセル"},
-    {"正在安装，请稍候…", "正在安裝，請稍候…", "インストール中です。しばらくお待ちください…"},
-    {"应用尚未退出，请从右键菜单退出后重试。", "應用尚未退出，請從右鍵選單退出後重試。",
-     "アプリが終了していません。メニューから終了してから再試行してください。"},
-    {"安装未完成，原应用保留在 %@。%@", "安裝未完成，原應用保留在 %@。%@",
-     "インストールが完了せず、元のアプリは %@ に保持されています。%@"},
-    {"请确认应用程序文件夹可以写入，再重试。", "請確認應用程式資料夾可以寫入，再重試。",
-     "アプリケーションフォルダに書き込みできることを確認して、再試行してください。"},
-    {"安装完成，正在打开…", "安裝完成，正在打開…", "インストール完了。開いています…"},
-    {"应用已安装，但系统登记未完成。请点击“打开应用”重试。", "應用已安裝，但系統登記未完成。請點擊「打開應用」重試。",
-     "アプリはインストールされましたが、システムへの登録が完了していません。「アプリを開く」を押して再試行してください。"},
-    {"请到“应用程序”中打开牛马，并按系统提示确认。", "請到「應用程式」中打開牛馬，並按系統提示確認。",
-     "「アプリケーション」から NiuMa を開き、システムの確認に従ってください。"},
+    {"安装牛马电子功德", "安裝牛馬電子功德", "牛馬電子功徳をインストール", "설치: 뉴마 전자공덕"},
+    {"正在安装牛马电子功德", "正在安裝牛馬電子功德", "牛馬電子功徳をインストールしています", "뉴마 전자공덕 설치 중"},
+    {"装好后自动打开，再按提示开启输入监控。", "裝好後自動打開，再按提示開啟輸入監控。", "インストール後に自動で開き、案内に従って入力監視を許可してください。", "설치 후 자동으로 열리며, 안내에 따라 입력 모니터링을 켜 주세요."},
+    {"安装位置：%@", "安裝位置：%@", "インストール先：%@", "설치 위치：%@"},
+    {"安装并打开", "安裝並打開", "インストールして開く", "설치하고 열기"},
+    {"安装后约 %@ · 本地运行，无需联网", "安裝後約 %@ · 本地運行，無需聯網", "インストール後約 %@ · ローカル動作、通信不要", "설치 후 약 %@ · 로컬 실행, 인터넷 불필요"},
+    {"打开应用", "打開應用", "アプリを開く", "앱 열기"},
+    {"重新安装", "重新安裝", "再インストール", "다시 설치"},
+    {"已安装，暂未能打开", "已安裝，暫未能打開", "インストール済みですが、開けませんでした", "설치되었으나 아직 열지 못했습니다"},
+    {"暂未完成安装", "暫未完成安裝", "インストールが完了していません", "아직 설치가 완료되지 않았습니다"},
+    {"知道了", "知道了", "了解しました", "알겠습니다"},
+    {"安装文件校验失败，请重新下载官方安装包。", "安裝檔案校驗失敗，請重新下載官方安裝包。", "インストールファイルの検証に失敗しました。公式インストーラーを再度ダウンロードしてください。", "설치 파일 검증에 실패했습니다. 공식 설치 패키지를 다시 다운로드해 주세요."},
+    {"先退出正在运行的牛马", "先退出正在運行的牛馬", "実行中の NiuMa を先に終了してください", "먼저 실행 중인 뉴마를 종료해 주세요"},
+    {"退出后继续安装，你的功德、形象和设置都会保留。", "退出後繼續安裝，你的功德、形象和設定都會保留。", "終了後にインストールを続けます。功徳・キャラ・設定はすべて保持されます。", "종료한 뒤 설치를 계속합니다. 공덕, 캐릭터, 설정은 모두 보존됩니다."},
+    {"退出并安装", "退出並安裝", "終了してインストール", "종료하고 설치"},
+    {"取消", "取消", "キャンセル", "취소"},
+    {"正在安装，请稍候…", "正在安裝，請稍候…", "インストール中です。しばらくお待ちください…", "설치 중입니다. 잠시 기다려 주세요…"},
+    {"应用尚未退出，请从右键菜单退出后重试。", "應用尚未退出，請從右鍵選單退出後重試。", "アプリが終了していません。メニューから終了してから再試行してください。", "앱이 아직 종료되지 않았습니다. 메뉴에서 종료한 뒤 다시 시도해 주세요."},
+    {"安装未完成，原应用保留在 %@。%@", "安裝未完成，原應用保留在 %@。%@", "インストールが完了せず、元のアプリは %@ に保持されています。%@", "설치가 완료되지 않아 원래 앱은 %@에 보존되어 있습니다. %@"},
+    {"请确认应用程序文件夹可以写入，再重试。", "請確認應用程式資料夾可以寫入，再重試。", "アプリケーションフォルダに書き込みできることを確認して、再試行してください。", "응용 프로그램 폴더에 쓸 수 있는지 확인한 뒤 다시 시도해 주세요."},
+    {"安装完成，正在打开…", "安裝完成，正在打開…", "インストール完了。開いています…", "설치 완료, 여는 중…"},
+    {"应用已安装，但系统登记未完成。请点击“打开应用”重试。", "應用已安裝，但系統登記未完成。請點擊「打開應用」重試。", "アプリはインストールされましたが、システムへの登録が完了していません。「アプリを開く」を押して再試行してください。", "앱은 설치되었지만 시스템 등록이 완료되지 않았습니다. 「앱 열기」를 눌러 다시 시도해 주세요."},
+    {"请到“应用程序”中打开牛马，并按系统提示确认。", "請到「應用程式」中打開牛馬，並按系統提示確認。", "「アプリケーション」から NiuMa を開き、システムの確認に従ってください。", "「응용 프로그램」에서 뉴마를 열고 시스템 안내에 따라 확인해 주세요."},
 };
 // clang-format on
 static constexpr std::size_t kNMInstallerTextCount =
@@ -76,6 +69,9 @@ static NMInstallerLanguage NMInstallerUiLanguage(void) {
       case niuma::reminder::Locale::Japanese:
         resolved = kNMInstallerLangJapanese;
         break;
+      case niuma::reminder::Locale::Korean:
+        resolved = kNMInstallerLangKorean;
+        break;
       case niuma::reminder::Locale::English:
         resolved = kNMInstallerLangEnglish;
         break;
@@ -89,23 +85,30 @@ static NMInstallerLanguage NMInstallerUiLanguage(void) {
 static NSDictionary<NSString *, NSString *> *NMInstallerTextTable(NMInstallerLanguage language) {
   static NSDictionary<NSString *, NSString *> *zhHant;
   static NSDictionary<NSString *, NSString *> *ja;
+  static NSDictionary<NSString *, NSString *> *ko;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     NSMutableDictionary *hant = [NSMutableDictionary dictionaryWithCapacity:kNMInstallerTextCount];
     NSMutableDictionary *japanese = [NSMutableDictionary dictionaryWithCapacity:kNMInstallerTextCount];
+    NSMutableDictionary *korean = [NSMutableDictionary dictionaryWithCapacity:kNMInstallerTextCount];
     for (std::size_t index = 0; index < kNMInstallerTextCount; ++index) {
       hant[@(kNMInstallerTexts[index].zhHans)] = @(kNMInstallerTexts[index].zhHant);
       japanese[@(kNMInstallerTexts[index].zhHans)] = @(kNMInstallerTexts[index].ja);
+      korean[@(kNMInstallerTexts[index].zhHans)] = @(kNMInstallerTexts[index].ko);
     }
     zhHant = hant;
     ja = japanese;
+    ko = korean;
   });
-  return language == kNMInstallerLangTraditionalChinese ? zhHant : ja;
+  if (language == kNMInstallerLangTraditionalChinese) return zhHant;
+  if (language == kNMInstallerLangKorean) return ko;
+  return ja;
 }
 
 static NSString *Text(NSString *zh, NSString *en) {
   switch (NMInstallerUiLanguage()) {
     case kNMInstallerLangEnglish: return en;
+    case kNMInstallerLangKorean:
     case kNMInstallerLangTraditionalChinese:
     case kNMInstallerLangJapanese:
       return NMInstallerTextTable(NMInstallerUiLanguage())[zh] ?: zh;

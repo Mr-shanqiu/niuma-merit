@@ -123,9 +123,11 @@ def load_table_entries():
     entries = {}
     with open(TABLE_PATH, encoding="utf-8") as f:
         text = f.read()
-    for m in re.finditer(r'\{"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)"\}', text):
+    for m in re.finditer(r'\{"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)",\s*"((?:[^"\\]|\\.)*)"\}', text):
         zh_hans = parse_c_literal_body(m.group(1))
-        entries[zh_hans] = (parse_c_literal_body(m.group(2)), parse_c_literal_body(m.group(3)))
+        entries[zh_hans] = (parse_c_literal_body(m.group(2)),
+                            parse_c_literal_body(m.group(3)),
+                            parse_c_literal_body(m.group(4)))
     return entries
 
 
@@ -143,8 +145,8 @@ def main():
     missing = [k for k in keys if k not in entries]
     stale = [k for k in entries if k not in keys]
     bad_specs = []
-    for key, (zht, ja) in entries.items():
-        for lang, value in (("zh-Hant", zht), ("ja", ja)):
+    for key, (zht, ja, ko) in entries.items():
+        for lang, value in (("zh-Hant", zht), ("ja", ja), ("ko", ko)):
             if specs(key) != specs(value):
                 bad_specs.append((lang, key))
 
@@ -162,7 +164,7 @@ def main():
         print("  BADSPEC:", lang, repr(k))
     if missing or stale or bad_specs:
         return 1
-    print("OK: 全部调用点均有 zh-Hant/ja 词条，格式说明符一致。")
+    print("OK: 全部调用点均有 zh-Hant/ja/ko 词条，格式说明符一致。")
     return 0
 
 
