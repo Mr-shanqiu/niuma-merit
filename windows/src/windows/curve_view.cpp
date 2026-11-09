@@ -1,10 +1,13 @@
 // F4 · 牛马曲线窗口实现（GDI+ 绘制 + WIC PNG 导出）。
 #include "curve_view.h"
 
+// GDI+ 依赖 objidl.h（IStream）与 propidl.h（PROPID），必须先于 gdiplus.h。
+#include <objidl.h>
+#include <propidl.h>
+#include <wincodec.h>
 #include <gdiplus.h>
 
 #include "ui_theme.h"
-#include <wincodec.h>
 
 #include <algorithm>
 #include <cmath>
