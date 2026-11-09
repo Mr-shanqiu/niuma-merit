@@ -1196,6 +1196,9 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 
 #import "curve_view.mm"
 
+// FB4 勋章徽章视图（程序化金属徽章）。
+#import "medal_badge_view.mm"
+
 @implementation MeritController
 
 - (void)loadOffworkState {
@@ -2183,52 +2186,56 @@ static NSString *NMMedalIcon(int tier) {
       UiText(@"已点亮 %d / 9 枚勋章 · 集齐成就：%@", @"Unlocked %d / 9 medals · Collector: %@"),
       litCount, achievement ? UiText(@"已达成", @"Achieved") : UiText(@"未达成", @"Not yet")];
 
-  // 重建勋章墙网格（默认收起时隐藏）。
+  // 重建勋章墙：FB4 徽章化（程序化金属徽章，未点亮灰色剪影）。
   for (NSView *view in self.medalWallContainer.subviews) [view removeFromSuperview];
   const niuma::medal::Thresholds thresholds = niuma::medal::BuiltinThresholds();
-  const CGFloat cellW = 190, cellH = 96;
+  const CGFloat wallH = NSHeight(self.medalWallContainer.bounds);
+  const CGFloat cellW = 196, cellH = 120;
+  const CGFloat gapX = (612 - cellW * 3) / 2.0;
+  const CGFloat rowPitch = cellH + 6;
   for (int row = 0; row < 3; ++row) {
     niuma::medal::Period period = (niuma::medal::Period)row;
-    CGFloat rowY = 300 - row * 104;
+    CGFloat rowY = wallH - (row + 1) * rowPitch;
     for (int tier = 0; tier < 3; ++tier) {
       std::string key = niuma::medal::MedalKey(period, tier);
       auto it = _medalEarned.find(key);
       BOOL lit = it != _medalEarned.end() && it->second.lit;
-      NSString *text;
+      NMMedalBadgeView *badge = [[NMMedalBadgeView alloc] initWithFrame:
+          NSMakeRect(tier * (cellW + gapX), rowY, cellW, cellH)];
+      badge.tier = tier;
+      badge.lit = lit;
+      badge.glyph = NMMedalPeriodLabel(period);
+      badge.title = [NSString stringWithFormat:@"%@ · %@",
+          NMMedalPeriodLabel(period), NMMedalTierLabel(tier)];
       if (lit) {
         NSString *first = [NSString stringWithUTF8String:it->second.first_earned_day.c_str()];
-        text = [NSString stringWithFormat:@"%@ %@ · %@\n%@ ×%u\n%@ %@",
-            NMMedalIcon(tier), NMMedalPeriodLabel(period), NMMedalTierLabel(tier),
+        badge.detail = [NSString stringWithFormat:@"%@ ×%u · %@ %@",
             UiText(@"已点亮", @"Unlocked"), it->second.count,
             UiText(@"首次", @"First"), first.length ? first : @"—"];
       } else {
-        text = [NSString stringWithFormat:@"🔒 %@ · %@\n%@\n%@ %llu",
-            NMMedalPeriodLabel(period), NMMedalTierLabel(tier),
-            UiText(@"未点亮", @"Locked"),
-            UiText(@"阈值", @"Threshold"), (unsigned long long)thresholds.For(period)[tier]];
+        badge.detail = [NSString stringWithFormat:@"%@ %@",
+            UiText(@"阈值", @"Threshold"),
+            [[NSNumberFormatter new] stringFromNumber:@(thresholds.For(period)[tier])]];
       }
-      NSTextField *cell = [NSTextField wrappingLabelWithString:text];
-      cell.frame = NSMakeRect(tier * (cellW + 10), rowY, cellW, cellH);
-      cell.font = [NSFont systemFontOfSize:12];
-      cell.textColor = lit ? NMUiInk() : NMUiMuted();
-      cell.alignment = NSTextAlignmentCenter;
-      cell.wantsLayer = YES;
-      cell.layer.backgroundColor = (lit ? [NSColor colorWithCalibratedRed:.99 green:.95 blue:.86 alpha:1]
-                                        : [NSColor colorWithCalibratedWhite:.96 alpha:1]).CGColor;
-      cell.layer.cornerRadius = 10;
-      [self.medalWallContainer addSubview:cell];
+      badge.accessibilityLabel = [NSString stringWithFormat:@"%@, %@", badge.title,
+          lit ? UiText(@"已点亮", @"Unlocked") : UiText(@"未点亮", @"Locked")];
+      [self.medalWallContainer addSubview:badge];
     }
   }
-  // 集齐成就
+  // 集齐成就徽章（第 10 枚，整行居中）。
   BOOL achLit = _medalEarned.count("achievement.all") && _medalEarned["achievement.all"].lit;
-  NSTextField *ach = [NSTextField wrappingLabelWithString:achLit
-      ? [NSString stringWithFormat:@"🏆 %@\n%@ %@", UiText(@"集齐成就", @"Collector Achievement"),
-          UiText(@"已于", @"Achieved"), [NSString stringWithUTF8String:_medalEarned["achievement.all"].first_earned_day.c_str()]]
-      : [NSString stringWithFormat:@"🏆 %@\n%@", UiText(@"集齐成就", @"Collector Achievement"), UiText(@"集齐 9 枚勋章后解锁", @"Unlocks after all 9 medals")]];
-  ach.frame = NSMakeRect(0, 0, cellW * 3 + 20, 80);
-  ach.font = [NSFont systemFontOfSize:12];
-  ach.alignment = NSTextAlignmentCenter;
-  ach.textColor = achLit ? NMUiInk() : NMUiMuted();
+  NMMedalBadgeView *ach = [[NMMedalBadgeView alloc] initWithFrame:
+      NSMakeRect((612 - cellW) / 2.0, wallH - 4 * rowPitch, cellW, cellH)];
+  ach.tier = -1;
+  ach.lit = achLit;
+  ach.glyph = UiText(@"集", @"★");
+  ach.title = UiText(@"集齐成就", @"Collector Achievement");
+  ach.detail = achLit
+      ? [NSString stringWithFormat:@"%@ %@", UiText(@"已于", @"Achieved"),
+          [NSString stringWithUTF8String:_medalEarned["achievement.all"].first_earned_day.c_str()]]
+      : UiText(@"集齐 9 枚勋章后解锁", @"Unlocks after all 9 medals");
+  ach.accessibilityLabel = [NSString stringWithFormat:@"%@, %@", ach.title,
+      achLit ? UiText(@"已点亮", @"Unlocked") : UiText(@"未点亮", @"Locked")];
   [self.medalWallContainer addSubview:ach];
 
   // 分享下拉：只列出已点亮的勋章。
@@ -2263,41 +2270,41 @@ static NSString *NMMedalIcon(int tier) {
 - (void)showMedals:(id)sender {
   (void)sender;
   if (!self.medalWindow) {
-    NSRect frame = NSMakeRect(0, 0, 660, 680);
+    NSRect frame = NSMakeRect(0, 0, 660, 840);
     NSView *content = [[NSView alloc] initWithFrame:frame];
     self.medalSummaryLabel = [NSTextField labelWithString:@""];
-    self.medalSummaryLabel.frame = NSMakeRect(24, 632, 612, 26);
+    self.medalSummaryLabel.frame = NSMakeRect(24, 792, 612, 26);
     self.medalSummaryLabel.font = [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold];
     [content addSubview:self.medalSummaryLabel];
     self.medalWallToggle = [NSButton checkboxWithTitle:UiText(@"展开勋章墙", @"Show medal wall")
         target:self action:@selector(toggleMedalWall:)];
-    self.medalWallToggle.frame = NSMakeRect(24, 598, 240, 24);
+    self.medalWallToggle.frame = NSMakeRect(24, 758, 240, 24);
     self.medalWallToggle.state = NSControlStateValueOff;  // 设置内默认收起
     [content addSubview:self.medalWallToggle];
-    self.medalWallContainer = [[NSView alloc] initWithFrame:NSMakeRect(24, 170, 612, 400)];
+    self.medalWallContainer = [[NSView alloc] initWithFrame:NSMakeRect(24, 200, 612, 520)];
     self.medalWallContainer.hidden = YES;
     [content addSubview:self.medalWallContainer];
     NSTextField *shareLabel = [NSTextField labelWithString:UiText(@"勋章分享图", @"Medal share image")];
-    shareLabel.frame = NSMakeRect(24, 140, 200, 20);
+    shareLabel.frame = NSMakeRect(24, 170, 200, 20);
     shareLabel.font = [NSFont systemFontOfSize:12];
     shareLabel.textColor = NMUiMuted();
     [content addSubview:shareLabel];
-    self.medalShareControl = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(24, 106, 300, 28) pullsDown:NO];
+    self.medalShareControl = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(24, 136, 300, 28) pullsDown:NO];
     [content addSubview:self.medalShareControl];
     self.medalShareButton = [NSButton buttonWithTitle:UiText(@"导出分享图…", @"Export Share Image…")
         target:self action:@selector(shareSelectedMedal:)];
-    self.medalShareButton.frame = NSMakeRect(336, 104, 180, 30);
+    self.medalShareButton.frame = NSMakeRect(336, 134, 180, 30);
     [content addSubview:self.medalShareButton];
     NSTextField *explanation = [NSTextField wrappingLabelWithString:UiText(
         @"勋章按自然日 / 自然周（周一–周日）/ 自然月归集，达到阈值即永久点亮并记录次数。阈值为 v3 占位值（thresholds_version = builtin-2026-11-08），上线后按 F0 新口径校准。分享图由用户主动导出，单张 PNG，不含本机路径、账号或原始时段数据。",
         @"Medals tally by natural day / week (Mon–Sun) / month; reaching a threshold permanently unlocks it and records the count. Thresholds are v3 placeholders (thresholds_version = builtin-2026-11-08) pending F0 calibration. Share images are exported by the user as a single PNG with no local paths, account IDs, or raw interval data.")];
-    explanation.frame = NSMakeRect(24, 20, 470, 76);
+    explanation.frame = NSMakeRect(24, 44, 470, 76);
     explanation.font = [NSFont systemFontOfSize:11];
     explanation.textColor = NMUiMuted();
     [content addSubview:explanation];
     NSButton *close = [NSButton buttonWithTitle:UiText(@"关闭", @"Close")
         target:self action:@selector(closeMedals:)];
-    close.frame = NSMakeRect(540, 20, 96, 30);
+    close.frame = NSMakeRect(540, 44, 96, 30);
     close.keyEquivalent = @"\r";
     [content addSubview:close];
     self.medalWindow = [[NSWindow alloc] initWithContentRect:frame
