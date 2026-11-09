@@ -331,10 +331,10 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     self.offworkDuration.frame=CGRectMake(0,encouragerHeight+14,240,35);
     self.offworkLabel.hidden=preview || offworkHeight==0;
     self.offworkDuration.hidden=preview || offworkHeight==0;
-    // 鼓励器区域：最底部 84pt。
-    self.encouragerLabel.frame=CGRectMake(0,encouragerHeight-26,240,22);
-    self.encouragerAmount.frame=CGRectMake(0,encouragerHeight-54,240,30);
-    self.encouragerBarBack.frame=CGRectMake(20,12,200,8);
+    // 鼓励器区域：最底部 84pt。FB13：顶部进度条 + 主信息 + 副信息。
+    self.encouragerBarBack.frame=CGRectMake(20,encouragerHeight-12,200,8);
+    self.encouragerAmount.frame=CGRectMake(0,encouragerHeight-46,240,30);
+    self.encouragerLabel.frame=CGRectMake(0,encouragerHeight-72,240,22);
     const BOOL showEnc = !preview && encouragerHeight>0;
     self.encouragerLabel.hidden=!showEnc; self.encouragerAmount.hidden=!showEnc;
     self.encouragerBarBack.hidden=!showEnc;

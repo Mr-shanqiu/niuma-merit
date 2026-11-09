@@ -243,6 +243,10 @@ static NSString *const kOffworkHour = @"offwork.hour";
 static NSString *const kOffworkMinute = @"offwork.minute";
 static NSString *const kOffworkDailySnapshots = @"offwork.dailySnapshots";
 static constexpr CGFloat kOffworkRegionHeight = 96.0;
+// FB13/D23：合并「上班进度」的两个副显示（仅倒计时 / 仅今日已赚 / 两者）。
+static constexpr NSInteger kProgressModeCountdown = 0;
+static constexpr NSInteger kProgressModeEarned = 1;
+static constexpr NSInteger kProgressModeBoth = 2;
 // F2 上班鼓励器在桌面组件底部叠加一个独立区域（今日已赚 + 进度条）。
 static constexpr CGFloat kEncouragerRegionHeight = 84.0;
 static constexpr CGFloat kCalendarLeft = 24.0;
@@ -615,6 +619,13 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, copy) NSString *offworkDayKey;
 @property(nonatomic, copy) NSString *offworkDisplayLabel;
 @property(nonatomic, copy) NSString *offworkDisplayDuration;
+// FB13/D23：合并「上班进度」——统一区域/显示。
+@property(nonatomic) BOOL progressActive;
+@property(nonatomic) NSInteger progressShowMode;      // 0 倒计时 / 1 今日已赚 / 2 两者
+@property(nonatomic, copy) NSString *progressMainText;
+@property(nonatomic, copy) NSString *progressSubText;
+@property(nonatomic) double progressFraction;
+@property(nonatomic, strong) NSSegmentedControl *progressModeControl;
 @property(nonatomic) NSTimeInterval offworkLastSampleUptime;
 @property(nonatomic) NSTimeInterval offworkLastFlushUptime;
 @property(nonatomic) CFMachPortRef eventTap;
@@ -750,6 +761,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)flushOffwork:(BOOL)durable;
 - (void)showOffworkSettings:(id)sender;
 - (void)offworkEnableChanged:(id)sender;
+- (void)refreshProgressDisplay;
 - (void)saveOffworkSettings:(id)sender;
 - (void)cancelOffworkSettings:(id)sender;
 - (NSDictionary *)offworkRecordForDay:(NSString *)key;
@@ -957,15 +969,16 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     [self.renderer installLayers:[self sceneDescriptors] images:[self sceneImages]];
     self.renderedIdentity=identity; self.renderedScene=self.scene;
   }
-  CGFloat offworkHeight=(!self.previewOnly && self.controller.offworkEnabled) ? kOffworkRegionHeight : 0;
-  CGFloat encouragerHeight=(!self.previewOnly && self.controller.encouragerActive) ? kEncouragerRegionHeight : 0;
+  // FB13/D23：合并后只保留一个「上班进度」区域（进度条 + 主信息 + 副信息）。
+  CGFloat offworkHeight=0;
+  CGFloat encouragerHeight=(!self.previewOnly && self.controller.progressActive) ? kEncouragerRegionHeight : 0;
   [self.renderer layoutWithScale:self.controller.uiScale backing:self.window.backingScaleFactor ?: 2
                    offworkHeight:offworkHeight encouragerHeight:encouragerHeight preview:self.previewOnly];
   [self.renderer setCounter:[NSString stringWithFormat:@"%lld",self.controller.todayTotal]
                       label:self.controller.offworkDisplayLabel duration:self.controller.offworkDisplayDuration];
-  [self.renderer setEncouragerLabel:self.controller.encouragerDisplayLabel
-                             amount:self.controller.encouragerDisplayAmount
-                           progress:self.controller.encouragerProgress
+  [self.renderer setEncouragerLabel:self.controller.progressSubText
+                             amount:self.controller.progressMainText
+                           progress:self.controller.progressFraction
                             visible:encouragerHeight>0];
   if(self.pendingAnimationDuration>0) {
     if(CACurrentMediaTime()-self.pendingAnimationStart<self.pendingAnimationDuration)
@@ -1244,10 +1257,8 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 }
 
 - (CGFloat)desiredExtraRegionHeight {
-  CGFloat extra = 0;
-  if (self.offworkEnabled) extra += kOffworkRegionHeight;
-  if (self.encouragerActive) extra += kEncouragerRegionHeight;
-  return extra;
+  // FB13/D23：合并后只有一个「上班进度」区域（不再分别叠加倒计时/鼓励器）。
+  return self.progressActive ? kEncouragerRegionHeight : 0;
 }
 
 // 统一处理底部叠加区（下班倒计时 + 上班鼓励器）导致的主窗口高度变化。
@@ -1281,6 +1292,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     self.offworkIsOvertime = NO;
     self.offworkDisplayLabel = UiText(@"时间不可用", @"Time unavailable");
     self.offworkDisplayDuration = @"--:--:--";
+    [self refreshProgressDisplay];
     [self.view setNeedsDisplay:YES];
     return;
   }
@@ -1334,6 +1346,67 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   if (self.calendarWindow.isVisible) [self.calendarView setNeedsDisplay:YES];
   if (changedDay) [self flushOffwork:YES];
   else if (uptime - self.offworkLastFlushUptime >= 60) [self flushOffwork:NO];
+  [self refreshProgressDisplay];
+}
+
+// FB13/D23：把「倒计时」与「今日已赚」统一为一条「上班进度」状态——同一上班窗口的三种读数。
+// 进度条 = 上班→下班的比例；主信息/副信息按用户选择的显示模式（倒计时/今日已赚/两者）填充。
+// 日薪为 0 时只能倒计时；选择「今日已赚」但无日薪自动回落为倒计时。下班后显示「已加班 X」。
+- (void)refreshProgressDisplay {
+  self.progressActive = self.offworkEnabled;
+  if (!self.offworkEnabled) { self.progressMainText = nil; self.progressSubText = nil; return; }
+  const std::time_t now = std::time(nullptr);
+  std::tm local = {};
+  int secondOfDay = 0;
+  if (niuma::OffworkLocalTime(now, &local))
+    secondOfDay = local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec;
+  niuma::encourager::Window window{(int)self.encouragerStartMinute, (int)self.encouragerEndMinute};
+  // 进度（0..1）：按上班→下班总秒数。
+  double fraction = 0.0;
+  if (window.Valid()) {
+    const int total = window.TotalSeconds();
+    if (total > 0) {
+      const int elapsed = std::clamp(secondOfDay - window.StartSecond(), 0, total);
+      fraction = static_cast<double>(elapsed) / static_cast<double>(total);
+    }
+  }
+  self.progressFraction = fraction;
+  // 倒计时读数（复用 offwork 时钟；下班后为已加班秒数）。
+  const auto off = niuma::EvaluateOffwork(now, (int)self.offworkHour, (int)self.offworkMinute);
+  NSString *countdownValue = off.valid
+      ? OffworkDurationText(off.overtime ? off.overtimeSeconds : off.remainingSeconds) : @"--:--:--";
+  NSString *countdownLabel = off.overtime ? UiText(@"已加班", @"Overtime") : UiText(@"距下班", @"Until off work");
+  // 已赚读数（复用 FB8 工时联动 + 1e-5 元刻度；数字滚动沿用 FB7）。
+  const BOOL wageValid = self.encouragerDailyWageMinor > 0 && window.Valid();
+  NSString *code = self.encouragerCurrency.length ? self.encouragerCurrency : @"CNY";
+  const int exponent = niuma::encourager::ExponentForCode(std::string(code.UTF8String ?: "CNY"));
+  const std::string symbol = niuma::encourager::SymbolForCode(std::string(code.UTF8String ?: "CNY"));
+  NSString *earnedValue = nil;
+  if (wageValid) {
+    const std::uint64_t wageTick =
+        niuma::encourager::WageMinorToTick(self.encouragerDailyWageMinor, exponent);
+    const std::uint64_t earnedTick = niuma::encourager::EarnedTick(wageTick, window, secondOfDay);
+    earnedValue = [NSString stringWithUTF8String:
+        niuma::encourager::FormatTickAmount(earnedTick, symbol).c_str()];
+  }
+  NSInteger mode = self.progressShowMode;
+  // 未填日薪 → 只能倒计时；选「今日已赚」但无日薪 → 自动回落倒计时。
+  if (!wageValid && mode != kProgressModeCountdown) mode = kProgressModeCountdown;
+  if (mode == kProgressModeEarned) {
+    self.progressMainText = earnedValue;
+    // 下班后即便只显示今日已赚，也补一句「已加班 X」。
+    self.progressSubText = off.overtime
+        ? [NSString stringWithFormat:@"%@ · %@ %@", UiText(@"今日工钱", @"Today's earnings"),
+            countdownLabel, countdownValue]
+        : UiText(@"今日工钱", @"Today's earnings");
+  } else if (mode == kProgressModeBoth) {
+    self.progressMainText = earnedValue;
+    self.progressSubText = [NSString stringWithFormat:@"%@ %@", countdownLabel, countdownValue];
+  } else {
+    self.progressMainText = countdownValue;
+    self.progressSubText = countdownLabel;
+  }
+  if (!self.appearanceHidden) [self.view setNeedsDisplay:YES];
 }
 
 - (void)offworkTick:(NSTimer *)timer {
@@ -1619,6 +1692,19 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   self.encouragerCurrencyOverride = [block[@"currency_override"] boolValue];
   self.encouragerStartMinute = [block[@"start_minute"] integerValue];
   self.encouragerEndMinute = [block[@"end_minute"] integerValue];
+  // FB13/D23：显示模式与合并开关。旧数据无 show_mode 时按是否有日薪推断。
+  self.progressShowMode = block[@"show_mode"]
+      ? [block[@"show_mode"] integerValue]
+      : (self.encouragerDailyWageMinor > 0 ? kProgressModeBoth : kProgressModeCountdown);
+  // 合并：只要倒计时或鼓励器任一开启，就视为「上班进度」开启。
+  self.offworkEnabled = self.offworkEnabled || self.encouragerEnabled;
+  // 统一同一「上班→下班」窗口：鼓励器开启时以它的上下班时段为准（同步到下班时间）。
+  if (self.encouragerEnabled) {
+    self.offworkHour = self.encouragerEndMinute / 60;
+    self.offworkMinute = self.encouragerEndMinute % 60;
+  } else {
+    self.encouragerEndMinute = self.offworkHour * 60 + self.offworkMinute;
+  }
   if (!self.encouragerCurrencyOverride) {
     niuma::encourager::CurrencyInfo info = DefaultCurrencyForCurrentLanguage();
     self.encouragerCurrency = [NSString stringWithUTF8String:info.code];
@@ -1628,6 +1714,7 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   self.encouragerActive = self.encouragerEnabled && self.encouragerDailyWageMinor > 0 &&
                           window.Valid();
   [self refreshEncouragerDisplay];
+  [self refreshProgressDisplay];
 }
 
 - (void)refreshEncouragerDisplay {
@@ -1689,16 +1776,24 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 470, 400)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         backing:NSBackingStoreBuffered defer:NO];
-    window.title = UiText(@"上班鼓励器", @"Work Encourager");
+    window.title = UiText(@"上班进度", @"Work Progress");
     window.releasedWhenClosed = NO;
     window.delegate = self;
     if (gIsolatedAcceptance) window.restorable = NO;
     NSView *content = window.contentView;
     self.encouragerEnableControl =
-        [NSButton checkboxWithTitle:UiText(@"启用上班鼓励器", @"Enable work encourager")
+        [NSButton checkboxWithTitle:UiText(@"启用上班进度", @"Enable work progress")
             target:self action:@selector(encouragerCurrencyOverrideChanged:)];
-    self.encouragerEnableControl.frame = NSMakeRect(24, 352, 380, 26);
+    self.encouragerEnableControl.frame = NSMakeRect(24, 352, 180, 26);
     [content addSubview:self.encouragerEnableControl];
+    // FB13：显示内容可选「倒计时 / 今日已赚 / 两者」。
+    self.progressModeControl = [NSSegmentedControl
+        segmentedControlWithLabels:@[ UiText(@"倒计时", @"Countdown"), UiText(@"今日已赚", @"Today's earnings"),
+                                      UiText(@"两者", @"Both") ]
+                      trackingMode:NSSegmentSwitchTrackingSelectOne
+                            target:self action:@selector(encouragerCurrencyOverrideChanged:)];
+    self.progressModeControl.frame = NSMakeRect(210, 350, 236, 28);
+    [content addSubview:self.progressModeControl];
 
     NSTextField *wageLabel = [NSTextField labelWithString:UiText(@"日薪", @"Daily wage")];
     wageLabel.frame = NSMakeRect(24, 312, 120, 22);
@@ -1796,8 +1891,13 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   self.encouragerEnableControl.state = self.encouragerEnabled ? NSControlStateValueOn : NSControlStateValueOff;
   int exponent = niuma::encourager::ExponentForCode(
       std::string(self.encouragerCurrency.UTF8String ?: "CNY"));
-  self.encouragerWageField.stringValue = [NSString stringWithUTF8String:
-      niuma::encourager::FormatAmountMinor(self.encouragerDailyWageMinor, exponent, "").c_str()];
+  self.encouragerWageField.stringValue = self.encouragerDailyWageMinor > 0
+      ? [NSString stringWithUTF8String:
+            niuma::encourager::FormatAmountMinor(self.encouragerDailyWageMinor, exponent, "").c_str()]
+      : @"";
+  NSInteger mode = self.progressShowMode;
+  if (self.encouragerDailyWageMinor == 0) mode = kProgressModeCountdown;
+  self.progressModeControl.selectedSegment = mode;
   self.encouragerCurrencyOverrideControl.state =
       self.encouragerCurrencyOverride ? NSControlStateValueOn : NSControlStateValueOff;
   NSString *code = self.encouragerCurrencyOverride ? self.encouragerCurrency
@@ -1874,7 +1974,11 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
       : [NSString stringWithUTF8String:DefaultCurrencyForCurrentLanguage().code];
   int exponent = niuma::encourager::ExponentForCode(std::string(code.UTF8String ?: "CNY"));
   unsigned long long wageMinor = 0;
-  if (!NMParseAmountToMinor(self.encouragerWageField.stringValue, exponent, &wageMinor)) {
+  // FB13：日薪可空。留空 = 0（只能倒计时）；非空则必须是合法非负金额。
+  NSString *wageText = [self.encouragerWageField.stringValue
+      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (wageText.length > 0 &&
+      !NMParseAmountToMinor(self.encouragerWageField.stringValue, exponent, &wageMinor)) {
     NSAlert *alert = [[NMUiAlert alloc] init];
     alert.messageText = UiText(@"日薪格式无效", @"Invalid Daily Wage");
     alert.informativeText = UiText(@"请填写非负金额，例如 200 或 200.50。",
@@ -1897,6 +2001,10 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
     [alert runModal];
     return;
   }
+  NSInteger mode = self.progressModeControl ? self.progressModeControl.selectedSegment
+                                            : self.progressShowMode;
+  // 未填日薪 → 只能倒计时（选「今日已赚」/「两者」自动回落为倒计时）。
+  if (wageMinor == 0 && mode != kProgressModeCountdown) mode = kProgressModeCountdown;
 
   self.encouragerEnabled = enabled;
   self.encouragerDailyWageMinor = wageMinor;
@@ -1904,6 +2012,11 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   self.encouragerCurrencyOverride = overrideOn;
   self.encouragerStartMinute = startMinute;
   self.encouragerEndMinute = endMinute;
+  self.progressShowMode = mode;
+  // 合并：与「下班倒计时」共用同一个上班→下班窗口（下班时间 = 结束时间）。
+  self.offworkEnabled = enabled;
+  self.offworkHour = (endMinute >= 1440) ? 0 : endMinute / 60;
+  self.offworkMinute = (endMinute >= 1440) ? 0 : endMinute % 60;
 
   if (self.metrics) {
     NSMutableDictionary *block = [self.metrics encourager];
@@ -1913,11 +2026,20 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
     block[@"currency_override"] = @(overrideOn);
     block[@"start_minute"] = @(startMinute);
     block[@"end_minute"] = @(endMinute);
+    block[@"show_mode"] = @(mode);
+  }
+  {
+    id<NMMeritPreferences> defaults = MeritPreferences();
+    [defaults setBool:self.offworkEnabled forKey:kOffworkEnabled];
+    [defaults setInteger:self.offworkHour forKey:kOffworkHour];
+    [defaults setInteger:self.offworkMinute forKey:kOffworkMinute];
   }
   niuma::encourager::Window window{(int)startMinute, (int)endMinute};
   self.encouragerActive = enabled && wageMinor > 0 && window.Valid();
   [self refreshEncouragerDisplay];
+  [self startOffworkTimer];
   [self startEncouragerTimer];
+  [self refreshProgressDisplay];
   [self saveMetrics];
   [self.encouragerSettingsWindow close];
 }
@@ -4067,16 +4189,12 @@ static NSString *NMCultivationTitle(int level) {
              action:@selector(showMeritCalendar:)
       keyEquivalent:@""];
   calendar.target = self;
-  NSMenuItem *offwork = [[NSMenuItem alloc]
-      initWithTitle:UiText(@"下班倒计时…", @"Off-work Countdown…")
-             action:@selector(showOffworkSettings:) keyEquivalent:@""];
-  offwork.target = self;
-  offwork.state = self.offworkEnabled ? NSControlStateValueOn : NSControlStateValueOff;
-  NSMenuItem *encourager = [[NSMenuItem alloc]
-      initWithTitle:UiText(@"上班鼓励器…", @"Work Encourager…")
+  // FB13/D23：「下班倒计时」「上班鼓励器」合并为单一「上班进度…」。
+  NSMenuItem *progress = [[NSMenuItem alloc]
+      initWithTitle:UiText(@"上班进度…", @"Work Progress…")
              action:@selector(showEncouragerSettings:) keyEquivalent:@""];
-  encourager.target = self;
-  encourager.state = self.encouragerActive ? NSControlStateValueOn : NSControlStateValueOff;
+  progress.target = self;
+  progress.state = self.offworkEnabled ? NSControlStateValueOn : NSControlStateValueOff;
   NSMenuItem *medals = [[NSMenuItem alloc]
       initWithTitle:UiText(@"修行等级…", @"Cultivation Level…")
              action:@selector(showMedals:) keyEquivalent:@""];
@@ -4099,12 +4217,12 @@ static NSString *NMCultivationTitle(int level) {
       action:@selector(toggleAutoHideFullscreen:) keyEquivalent:@""];
   autoHide.target = self;
   autoHide.state = _visibility.autoHideFullscreen ? NSControlStateValueOn : NSControlStateValueOff;
-  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, offwork, encourager, medals, launchAtLogin, about, quit];
+  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, progress, medals, launchAtLogin, about, quit];
   for (NSMenuItem *item in entries) [menu addItem:item];
   NSFont *menuFont = [NSFont systemFontOfSize:14];
   menu.font = menuFont;
   if (@available(macOS 11.0, *)) {
-    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"clock", @"yensign.circle", @"rosette", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
+    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"clock", @"rosette", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
     for (NSUInteger index = 0; index < entries.count; ++index) {
       NSImage *image = [NSImage imageWithSystemSymbolName:symbols[index] accessibilityDescription:nil];
       image.size = NSMakeSize(16, 16); ((NSMenuItem *)entries[index]).image = image;
