@@ -69,6 +69,7 @@
 #include <utility>
 #include <vector>
 #include "ui_theme.h"
+#include "ui_text.h"
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "ole32.lib")
@@ -184,18 +185,44 @@ constexpr int kStatusRetry = 4003;
 constexpr int kStatusClose = 4004;
 constexpr int kReminderClose = 4101;
 
-bool IsChineseUi() {
-  return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE;
-}
+// 语言归一化统一走 niuma::ui（S0 LocaleFromLanguageTag，CONTRACT_096 §10）：
+// ja*→ja；en*→en；zh+Hant/TW/HK/MO→zh-Hant；其余（含未知/空）→zh-Hans。
+bool IsChineseUi() { return niuma::ui::IsChineseScript(); }
 
+// UiText(简中, English)：zh-Hans 取简中；en 取英文；zh-Hant/ja 查表（缺词条回落简中）。
 const wchar_t* UiText(const wchar_t* chinese, const wchar_t* english) {
-  return IsChineseUi() ? chinese : english;
+  return niuma::ui::Text(chinese, english);
 }
 
 const wchar_t* WindowTitle() {
   if (IsRuntimeCandidate())
     return UiText(L"牛马电子功德 · 测试数据", L"NiuMa Merit · Test Data");
   return UiText(L"牛马电子功德", L"NiuMa Merit");
+}
+
+// 周标签（索引 0 = 周一）：zh-Hans/zh-Hant 一..日；ja 月..日；en Mon..Sun。
+const wchar_t* WeekdayShortLabel(int index) {
+  static const wchar_t* zh[] = {L"一", L"二", L"三", L"四", L"五", L"六", L"日"};
+  static const wchar_t* ja[] = {L"月", L"火", L"水", L"木", L"金", L"土", L"日"};
+  static const wchar_t* en[] = {L"Mon", L"Tue", L"Wed", L"Thu", L"Fri", L"Sat", L"Sun"};
+  if (index < 0 || index > 6) index = 0;
+  switch (niuma::ui::CurrentLanguage()) {
+    case niuma::ui::Language::Japanese: return ja[index];
+    case niuma::ui::Language::English: return en[index];
+    default: return zh[index];
+  }
+}
+// 星期全称（索引 0 = 周一）：zh 星期一..；ja 月曜日..；en Monday..Sun。
+const wchar_t* WeekdayLongLabel(int index) {
+  static const wchar_t* zh[] = {L"星期一", L"星期二", L"星期三", L"星期四", L"星期五", L"星期六", L"星期日"};
+  static const wchar_t* ja[] = {L"月曜日", L"火曜日", L"水曜日", L"木曜日", L"金曜日", L"土曜日", L"日曜日"};
+  static const wchar_t* en[] = {L"Monday", L"Tuesday", L"Wednesday", L"Thursday", L"Friday", L"Saturday", L"Sunday"};
+  if (index < 0 || index > 6) index = 0;
+  switch (niuma::ui::CurrentLanguage()) {
+    case niuma::ui::Language::Japanese: return ja[index];
+    case niuma::ui::Language::English: return en[index];
+    default: return zh[index];
+  }
 }
 
 const wchar_t* MainWindowClass() {
@@ -1662,7 +1689,7 @@ void PumpMetrics() {
 
 bool RefreshEncourager(bool force);  // 定义在下方；LoadEncouragerState 会调用。
 
-const char* UiLanguageTag() { return IsChineseUi() ? "zh-Hans" : "en"; }
+const char* UiLanguageTag() { return niuma::ui::CurrentLanguageTag(); }
 
 std::wstring EncouragerWide(const std::string& value) {
   return std::wstring(value.begin(), value.end());
@@ -1798,9 +1825,7 @@ niuma::windows::window::CurveViewData BuildCurveData(niuma::windows::window::Cur
   std::vector<std::string> keys;
   if (mode == CurveViewMode::Week) {
     keys = niuma::curve::WeekDayKeys(today.wYear, today.wMonth, today.wDay);
-    const wchar_t* zh[] = {L"一", L"二", L"三", L"四", L"五", L"六", L"日"};
-    const wchar_t* en[] = {L"Mon", L"Tue", L"Wed", L"Thu", L"Fri", L"Sat", L"Sun"};
-    for (int i = 0; i < 7; ++i) data.rangeLabels.emplace_back(IsChineseUi() ? zh[i] : en[i]);
+    for (int i = 0; i < 7; ++i) data.rangeLabels.emplace_back(WeekdayShortLabel(i));
   } else {
     keys = niuma::curve::MonthDayKeys(today.wYear, today.wMonth);
     for (std::size_t i = 0; i < keys.size(); ++i)
@@ -3353,7 +3378,7 @@ void PresentReminderForTrigger(niuma::reminder::ActivitySampler::Trigger trigger
     region[1] = static_cast<char>(geo[1]);
   }
   niuma::reminder::SelectionContext context;
-  context.locale = IsChineseUi() ? niuma::reminder::Locale::Chinese : niuma::reminder::Locale::English;
+  context.locale = niuma::reminder::LocaleFromLanguageTag(niuma::ui::CurrentLanguageTag());
   context.region = region;
   context.trigger = trigger == niuma::reminder::ActivitySampler::Trigger::HighIntensity ? 2U : 1U;
   context.overtime = gOffwork.enabled && !gOffwork.suspended && gOffwork.snapshot.valid
@@ -4497,17 +4522,10 @@ INT_PTR CALLBACK AboutDialogProcedure(HWND window, UINT message,
 
 void ShowAboutDialog(HWND owner) {
   const std::wstring version = NIUMA_APP_VERSION_W;
-  std::wstring text = IsChineseUi()
-      ? L"牛马电子功德 v" + version + L"\n\n"
-        L"只统计按键、鼠标按键和滚轮手势发生的次数，不读取具体内容、"
-        L"鼠标位置或窗口信息。\n本软件不包含网络请求、"
-        L"遥测或自动更新。\n\n官方网站：\n"
-      : L"NiuMa Merit v" + version + L"\n\n"
-        L"Counts keyboard presses, mouse button presses, and scroll distance without "
-        L"reading specific content, mouse positions, or window information.\n"
-        L"The app contains no network requests, "
-        L"telemetry, or automatic updates."
-        L"\n\nOfficial website:\n";
+  std::wstring text = UiText(L"牛马电子功德 v", L"NiuMa Merit v") + version;
+  text += UiText(
+      L"\n\n只统计按键、鼠标按键和滚轮手势发生的次数，不读取具体内容、鼠标位置或窗口信息。\n本软件不包含网络请求、遥测或自动更新。\n\n官方网站：\n",
+      L"\n\nCounts keyboard presses, mouse button presses, and scroll distance without reading specific content, mouse positions, or window information.\nThe app contains no network requests, telemetry, or automatic updates.\n\nOfficial website:\n");
   text += L"https://gongde.zqscreen.cn/";
   text += UiText(L"\n\n如未正常计数，可联系开发者，或扫描下方抖音码进粉丝群寻求帮助。",
                 L"\n\nIf input is not being counted, contact the developer or scan the Douyin code below to join the fan group for help.");
@@ -4575,26 +4593,68 @@ bool CalendarChinese() {
 #endif
   return IsChineseUi();
 }
-const wchar_t* CalendarText(const wchar_t* zh, const wchar_t* en) { return CalendarChinese() ? zh : en; }
+// 日历文案统一走 4 语查表（zh-Hant/ja 查表，缺词条回落简中）。
+const wchar_t* CalendarText(const wchar_t* zh, const wchar_t* en) { return UiText(zh, en); }
 std::wstring CalendarNumber(std::uint64_t value) {
   auto text = std::to_wstring(value);
   for (int i=static_cast<int>(text.size())-3;i>0;i-=3) text.insert(static_cast<std::size_t>(i),1,L',');
   return text;
 }
+// 数字缩写：简中 万/亿/万亿；繁中 萬/億/萬億；日语 万/億/兆；英文 K/M/B/T。
 std::wstring CalendarCompactNumber(std::uint64_t value) {
-  const std::uint64_t unit = CalendarChinese() ? (value>=1000000000000ULL ? 1000000000000ULL :
+  const auto lang = niuma::ui::CurrentLanguage();
+  const bool cjk = lang != niuma::ui::Language::English;
+  const std::uint64_t unit = cjk ? (value>=1000000000000ULL ? 1000000000000ULL :
       value>=100000000 ? 100000000 : value>=10000 ? 10000 : 1) :
       (value>=1000000000000ULL ? 1000000000000ULL : value>=1000000000 ? 1000000000 : value>=1000000 ? 1000000 : value>=1000 ? 1000 : 1);
   if (unit==1) return CalendarNumber(value);
-  const wchar_t* suffix = CalendarChinese() ? (unit==10000 ? L"万" : unit==100000000 ? L"亿" : L"万亿") :
-      (unit==1000 ? L"K" : unit==1000000 ? L"M" : unit==1000000000 ? L"B" : L"T");
+  const wchar_t* suffix;
+  switch (lang) {
+    case niuma::ui::Language::Japanese:
+      suffix = unit==10000 ? L"万" : unit==100000000 ? L"億" : L"兆"; break;
+    case niuma::ui::Language::TraditionalChinese:
+      suffix = unit==10000 ? L"萬" : unit==100000000 ? L"億" : L"萬億"; break;
+    case niuma::ui::Language::SimplifiedChinese:
+      suffix = unit==10000 ? L"万" : unit==100000000 ? L"亿" : L"万亿"; break;
+    default:
+      suffix = unit==1000 ? L"K" : unit==1000000 ? L"M" : unit==1000000000 ? L"B" : L"T"; break;
+  }
   return std::to_wstring(value/unit)+L"."+std::to_wstring((value%unit)/(unit/10))+suffix;
 }
 std::wstring CalendarOvertimeShort(int seconds) {
   seconds=std::max(0,seconds);const auto h=seconds/3600,m=seconds%3600/60;
   if (seconds>0 && seconds<60) return CalendarText(L"加班 <1分",L"OT <1m");
-  if (CalendarChinese()) return L"加班 "+(h ? std::to_wstring(h)+L"时" : L"")+std::to_wstring(m)+L"分";
-  return L"OT "+(h ? std::to_wstring(h)+L"h " : L"")+std::to_wstring(m)+L"m";
+  switch (niuma::ui::CurrentLanguage()) {
+    case niuma::ui::Language::Japanese:
+      return L"残業 "+(h ? std::to_wstring(h)+L"時間" : L"")+std::to_wstring(m)+L"分";
+    case niuma::ui::Language::TraditionalChinese:
+      return L"加班 "+(h ? std::to_wstring(h)+L"時" : L"")+std::to_wstring(m)+L"分";
+    case niuma::ui::Language::English:
+      return L"OT "+(h ? std::to_wstring(h)+L"h " : L"")+std::to_wstring(m)+L"m";
+    default:
+      return L"加班 "+(h ? std::to_wstring(h)+L"时" : L"")+std::to_wstring(m)+L"分";
+  }
+}
+// 日历月份标题：简/繁/日 2026年11月；英 2026 / 11。
+std::wstring CalendarMonthTitle(int year, int month) {
+  if (niuma::ui::CurrentLanguage() == niuma::ui::Language::English)
+    return std::to_wstring(year)+L" / "+std::to_wstring(month);
+  return std::to_wstring(year)+L"年"+std::to_wstring(month)+L"月";
+}
+// 日历选中日详情：简/繁 M月D日，星期X；日 M月D日（月）；英 Monday, y/m/d。
+std::wstring CalendarDateDetail(int year, int month, int day, int weekdayIndex) {
+  switch (niuma::ui::CurrentLanguage()) {
+    case niuma::ui::Language::Japanese:
+      return std::to_wstring(month)+L"月"+std::to_wstring(day)+L"日（"+
+             std::wstring(WeekdayShortLabel(weekdayIndex))+L"）";
+    case niuma::ui::Language::TraditionalChinese:
+      return std::to_wstring(month)+L"月"+std::to_wstring(day)+L"日，"+WeekdayLongLabel(weekdayIndex);
+    case niuma::ui::Language::SimplifiedChinese:
+      return std::to_wstring(month)+L"月"+std::to_wstring(day)+L"日，"+WeekdayLongLabel(weekdayIndex);
+    default:
+      return std::wstring(WeekdayLongLabel(weekdayIndex))+L", "+std::to_wstring(year)+L"/"+
+             std::to_wstring(month)+L"/"+std::to_wstring(day);
+  }
 }
 float CalendarScale(HWND window) {
   RECT client{}; GetClientRect(window,&client);
@@ -4732,7 +4792,7 @@ void DrawMeritCalendar(HDC dc) {
   graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
   const Gdiplus::Color ink(255,29,29,31),muted(255,110,110,115),accent(255,188,75,25),future(255,170,170,175);
   const Gdiplus::Color rule(255,233,233,236),selection(255,255,241,231);
-  std::wstring month=std::to_wstring(gCalendar.year)+(CalendarChinese()?L"年":L" / ")+std::to_wstring(gCalendar.month)+(CalendarChinese()?L"月":L"");
+  std::wstring month=CalendarMonthTitle(gCalendar.year,gCalendar.month);
   DrawCalendarText(graphics,month,{70,15,206,42},28,ink,true);
   DrawCalendarText(graphics,CalendarText(L"本月功德",L"This month's merit"),{26,88,420,24},13,muted);
   DrawCalendarText(graphics,(data.totalSaturated?L"≥":L"")+CalendarNumber(data.total),{23,113,440,58},44,ink,true);
@@ -4740,10 +4800,8 @@ void DrawMeritCalendar(HDC dc) {
   DrawCalendarText(graphics,CalendarText(L"累计功德",L"Total merit"),{490,99,244,23},13,muted,false,Gdiplus::StringAlignmentFar);
   DrawCalendarText(graphics,CalendarNumber(gState.total),{476,124,258,43},28,muted,true,Gdiplus::StringAlignmentFar);
   Gdiplus::Pen line(rule,1);graphics.DrawLine(&line,26.f,194.f,734.f,194.f);
-  const wchar_t* zhWeekdays[]={L"一",L"二",L"三",L"四",L"五",L"六",L"日"};
-  const wchar_t* enWeekdays[]={L"Mon",L"Tue",L"Wed",L"Thu",L"Fri",L"Sat",L"Sun"};
   const float cellWidth=(kCalendarWidth-52)/7;
-  for(int column=0;column<7;++column)DrawCalendarText(graphics,CalendarChinese()?zhWeekdays[column]:enWeekdays[column],
+  for(int column=0;column<7;++column)DrawCalendarText(graphics,WeekdayShortLabel(column),
     {26+column*cellWidth,202,cellWidth,24},13,muted,false,Gdiplus::StringAlignmentCenter);
   const int rows=CalendarRows();const float rowHeight=kCalendarGridHeight/rows;
   for(int row=0;row<=rows;++row)graphics.DrawLine(&line,26.f,kCalendarGridTop+row*rowHeight,734.f,kCalendarGridTop+row*rowHeight);
@@ -4763,9 +4821,7 @@ void DrawMeritCalendar(HDC dc) {
   Gdiplus::GraphicsPath detail;niuma::ui::RoundPath(detail,{26,590,708,90},9);
   Gdiplus::SolidBrush detailFill(Gdiplus::Color(255,252,247,242));graphics.FillPath(&detailFill,&detail);
   const auto& selected=data.days[gCalendar.selectedDay];const int weekday=(MondayOffset(gCalendar.year,gCalendar.month)+gCalendar.selectedDay-1)%7;
-  const wchar_t* fullWeekdays[]={L"星期一",L"星期二",L"星期三",L"星期四",L"星期五",L"星期六",L"星期日"};
-  const auto date=CalendarChinese()?std::to_wstring(gCalendar.month)+L"月"+std::to_wstring(gCalendar.selectedDay)+L"日，"+fullWeekdays[weekday]:
-    std::wstring(enWeekdays[weekday])+L", "+std::to_wstring(gCalendar.year)+L"/"+std::to_wstring(gCalendar.month)+L"/"+std::to_wstring(gCalendar.selectedDay);
+  const auto date=CalendarDateDetail(gCalendar.year,gCalendar.month,gCalendar.selectedDay,weekday);
   DrawCalendarText(graphics,date,{44,603,226,28},17,ink,true);
   if(gCalendar.year==now.wYear && gCalendar.month==now.wMonth && gCalendar.selectedDay==now.wDay)
     DrawCalendarText(graphics,CalendarText(L"今天",L"Today"),{272,603,52,28},12,accent);

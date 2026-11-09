@@ -10,6 +10,7 @@
 #include <gdiplus.h>
 
 #include "ui_theme.h"
+#include "ui_text.h"
 
 #include <algorithm>
 #include <cmath>
@@ -20,6 +21,9 @@
 namespace niuma::windows::window {
 
 namespace {
+
+// 4 语查表（zh-Hant/ja 查表，缺词条回落简中）。
+const wchar_t* T(const wchar_t* zh, const wchar_t* en) { return niuma::ui::Text(zh, en); }
 
 constexpr wchar_t kCurveClass[] = L"NiuMaMeritCurve";
 constexpr int kCurveDayButton = 4301;
@@ -83,6 +87,7 @@ std::wstring Number(std::uint64_t value) {
 
 // 通用绘制：width/height 为设计尺寸，scale 已在调用方设置。draw 内部对齐到设计坐标系。
 void PaintCurve(Gdiplus::Graphics& graphics, const CurveViewData& data, bool chinese) {
+  (void)chinese;  // 文案统一走 T()/Text()，chinese 参数保留仅为签名兼容。
   const float W = kCurveWidth, H = kCurveHeight;
   graphics.Clear(Gdiplus::Color::White);
   graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
@@ -92,20 +97,17 @@ void PaintCurve(Gdiplus::Graphics& graphics, const CurveViewData& data, bool chi
       accent(255, 240, 139, 35), blue(255, 0, 112, 245),
       rule(255, 233, 233, 236), uncollected(255, 224, 224, 228);
 
-  const wchar_t* zhDay = L"牛马曲线 · 今日（%s）";
-  const wchar_t* enDay = L"Merit Curve · Today (%s)";
-  const wchar_t* zhWeek = L"牛马曲线 · 本周（周一–周日）";
-  const wchar_t* enWeek = L"Merit Curve · This Week (Mon–Sun)";
   std::wstring title;
   wchar_t buffer[128] = {};
   if (data.mode == CurveViewMode::Day) {
-    swprintf_s(buffer, std::size(buffer), chinese ? zhDay : enDay, data.todayKey.c_str());
+    swprintf_s(buffer, std::size(buffer),
+               T(L"牛马曲线 · 今日（%s）", L"Merit Curve · Today (%s)"), data.todayKey.c_str());
     title = buffer;
   } else if (data.mode == CurveViewMode::Week) {
-    title = chinese ? zhWeek : enWeek;
+    title = T(L"牛马曲线 · 本周（周一–周日）", L"Merit Curve · This Week (Mon–Sun)");
   } else {
     swprintf_s(buffer, std::size(buffer),
-               chinese ? L"牛马曲线 · %d 年 %d 月" : L"Merit Curve · %d / %d",
+               T(L"牛马曲线 · %d 年 %d 月", L"Merit Curve · %d / %d"),
                data.year, data.month);
     title = buffer;
   }
@@ -118,15 +120,15 @@ void PaintCurve(Gdiplus::Graphics& graphics, const CurveViewData& data, bool chi
 
   if (data.mode == CurveViewMode::Day) {
     // 今日总计（旧日总数，权威来源）。
-    DrawText(graphics, chinese ? L"今日总计" : L"Today's total",
+    DrawText(graphics, T(L"今日总计", L"Today's total"),
              Gdiplus::RectF(28, 48, 120, 18), 11, muted, false);
     DrawText(graphics, Number(data.todayTotal),
              Gdiplus::RectF(W - 260, 44, 232, 28), 22, ink, true,
              Gdiplus::StringAlignmentFar);
     if (data.dayBuckets.size() != 96 || data.dayCoverage.size() != 96) {
       DrawText(graphics,
-               chinese ? L"今日暂无 0.9.6 采集数据（历史旧日按「未采集」处理）"
-                       : L"No 0.9.6 samples yet today (older days show as not collected).",
+               T(L"今日暂无 0.9.6 采集数据（历史旧日按「未采集」处理）",
+                 L"No 0.9.6 samples yet today (older days show as not collected)."),
                Gdiplus::RectF(plot.X, plot.Y + plot.Height / 2 - 10, plot.Width, 22),
                13, muted, false);
       return;
@@ -159,17 +161,17 @@ void PaintCurve(Gdiplus::Graphics& graphics, const CurveViewData& data, bool chi
                muted, false, Gdiplus::StringAlignmentCenter);
     }
     DrawText(graphics,
-             (chinese ? L"峰值/桶 " : L"Peak/bucket ") + Number(maxValue),
+             T(L"峰值/桶 ", L"Peak/bucket ") + Number(maxValue),
              Gdiplus::RectF(plot.X, plot.Y - 18, 240, 16), 11, muted, false);
     // 图例：未采集。
     {
       Gdiplus::SolidBrush shade(uncollected);
       graphics.FillRectangle(&shade, Gdiplus::RectF(plot.GetRight() - 150, plot.Y - 16, 14, 6));
-      DrawText(graphics, chinese ? L"未采集" : L"Not collected",
+      DrawText(graphics, T(L"未采集", L"Not collected"),
                Gdiplus::RectF(plot.GetRight() - 130, plot.Y - 21, 120, 16), 11, muted);
     }
     if (data.dayPartial) {
-      DrawText(graphics, chinese ? L"部分采集（升级当天）" : L"Partial capture (upgrade day)",
+      DrawText(graphics, T(L"部分采集（升级当天）", L"Partial capture (upgrade day)"),
                Gdiplus::RectF(plot.X, plot.GetBottom() + 26, 300, 16), 11, muted);
     }
     return;
@@ -203,7 +205,7 @@ void PaintCurve(Gdiplus::Graphics& graphics, const CurveViewData& data, bool chi
                Gdiplus::StringAlignmentCenter);
     }
   }
-  DrawText(graphics, (chinese ? L"峰值 " : L"Peak ") + Number(maxValue),
+  DrawText(graphics, T(L"峰值 ", L"Peak ") + Number(maxValue),
            Gdiplus::RectF(plot.X, plot.Y - 18, 240, 16), 11, muted, false);
 }
 
@@ -344,9 +346,8 @@ void ShowCurveWindow(HWND owner, const CurveViewData& data) {
   SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
   const int width = std::min(desired.right - desired.left, work.right - work.left);
   const int height = std::min(desired.bottom - desired.top, work.bottom - work.top);
-  const bool chinese = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE;
   gCurve.window = CreateWindowExW(
-      0, kCurveClass, chinese ? L"牛马曲线" : L"Merit Curve", style,
+      0, kCurveClass, T(L"牛马曲线", L"Merit Curve"), style,
       work.left + (work.right - work.left - width) / 2,
       work.top + (work.bottom - work.top - height) / 2, width, height, owner, nullptr,
       GetModuleHandleW(nullptr), nullptr);
@@ -357,10 +358,10 @@ void ShowCurveWindow(HWND owner, const CurveViewData& data) {
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                     GetModuleHandleW(nullptr), nullptr);
   };
-  createButton(kCurveDayButton, chinese ? L"日" : L"Day");
-  createButton(kCurveWeekButton, chinese ? L"周" : L"Week");
-  createButton(kCurveMonthButton, chinese ? L"月" : L"Month");
-  createButton(kCurveExportButton, chinese ? L"导出分享图…" : L"Export Share Image…");
+  createButton(kCurveDayButton, T(L"日", L"Day"));
+  createButton(kCurveWeekButton, T(L"周", L"Week"));
+  createButton(kCurveMonthButton, T(L"月", L"Month"));
+  createButton(kCurveExportButton, T(L"导出分享图…", L"Export Share Image…"));
   niuma::ui::Apply(gCurve.window);
   LayoutCurve(gCurve.window);
   niuma::ui::WindowChrome(gCurve.window);
@@ -398,6 +399,7 @@ bool SavePngToFile(const std::wstring& path, Gdiplus::Bitmap& bitmap) {
 bool ExportSharePng(HWND owner, const ShareCardModel& model,
                     const std::wstring& suggestedName, bool chinese,
                     std::wstring* errorOut) {
+  (void)chinese;  // 文案统一走 T()/Text()。
   // 单张 PNG，1000x1250 分享卡；只渲染白名单字段。
   const int imageWidth = 1000, imageHeight = 1250;
   Gdiplus::Bitmap bitmap(imageWidth, imageHeight, PixelFormat32bppARGB);
@@ -444,14 +446,14 @@ bool ExportSharePng(HWND owner, const ShareCardModel& model,
         DrawText(graphics, value, Gdiplus::RectF(440, y, 440, 34), 22, ink, true);
         y += 52;
       };
-      row(chinese ? L"本期功德" : L"Period merit", Number(model.medalValue));
+      row(T(L"本期功德", L"Period merit"), Number(model.medalValue));
       if (model.medalThreshold > 0)
-        row(chinese ? L"达成阈值" : L"Threshold", Number(model.medalThreshold));
+        row(T(L"达成阈值", L"Threshold"), Number(model.medalThreshold));
       if (!model.medalEarnedDay.empty())
-        row(chinese ? L"首次获得" : L"First earned", model.medalEarnedDay);
-      row(chinese ? L"累计次数" : L"Times earned", std::to_wstring(model.medalCount));
+        row(T(L"首次获得", L"First earned"), model.medalEarnedDay);
+      row(T(L"累计次数", L"Times earned"), std::to_wstring(model.medalCount));
       if (model.medalAchievement)
-        DrawText(graphics, chinese ? L"集齐成就 · 九枚全部点亮" : L"Collector · all nine unlocked",
+        DrawText(graphics, T(L"集齐成就 · 九枚全部点亮", L"Collector · all nine unlocked"),
                  Gdiplus::RectF(120, y + 10, 760, 40), 22, accent, true);
     }
     if (!model.footerProduct.empty())
@@ -490,21 +492,20 @@ bool ExportCurvePng(HWND owner, const CurveViewData& data, const std::wstring& s
                     std::wstring* errorOut) {
   ShareCardModel model;
   model.kind = ShareCardModel::Kind::Curve;
-  model.title = chinese ? titleZh : titleEn;
-  model.footerProduct = chinese ? titleZh : titleEn;
+  model.title = niuma::ui::Text(titleZh.c_str(), titleEn.c_str());
+  model.footerProduct = niuma::ui::Text(titleZh.c_str(), titleEn.c_str());
   model.footerWatermark = L"niuma-merit 0.9.6";
   model.generatedOn = data.todayKey;
   model.hasCurve = true;
   model.curve = data;
   if (data.mode == CurveViewMode::Day)
-    model.subtitle = chinese ? (L"今日 96 桶 · " + data.todayKey)
-                             : (L"Today, 96 buckets · " + data.todayKey);
+    model.subtitle = T(L"今日 96 桶 · ", L"Today, 96 buckets · ") + data.todayKey;
   else if (data.mode == CurveViewMode::Week)
-    model.subtitle = chinese ? L"本周每日功德（周一–周日）" : L"Daily merit this week (Mon–Sun)";
+    model.subtitle = T(L"本周每日功德（周一–周日）", L"Daily merit this week (Mon–Sun)");
   else {
     wchar_t buffer[64] = {};
     swprintf_s(buffer, std::size(buffer),
-               chinese ? L"%d 年 %d 月每日功德" : L"Daily merit %d / %d", data.year, data.month);
+               T(L"%d 年 %d 月每日功德", L"Daily merit %d / %d"), data.year, data.month);
     model.subtitle = buffer;
   }
   return ExportSharePng(owner, model, suggestedName, chinese, errorOut);

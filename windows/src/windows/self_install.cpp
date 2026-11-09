@@ -1,4 +1,5 @@
 #include "self_install.h"
+#include "ui_text.h"
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -17,8 +18,9 @@ namespace fs = std::filesystem;
 constexpr char kOwner[] = "NIUMA_SINGLE_FILE_INSTALL_V1\n";
 struct Failure { std::wstring message; };
 void Require(bool ok, const wchar_t* message) { if (!ok) throw Failure{message}; }
+// 安装器文案 4 语：语言归一化与 UI 同一规则（niuma::ui，CONTRACT_096 §10）。
 const wchar_t* Text(const wchar_t* zh, const wchar_t* en) {
-  return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE ? zh : en;
+  return niuma::ui::Text(zh, en);
 }
 [[noreturn]] void FileFailure(const wchar_t* action, DWORD error) {
   throw Failure{std::wstring(action) + Text(L"（系统错误码：", L" (Windows error: ") +

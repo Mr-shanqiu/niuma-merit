@@ -10,6 +10,7 @@
 
 #include "curve_view.h"
 #include "ui_theme.h"
+#include "ui_text.h"
 
 #include <algorithm>
 #include <cmath>
@@ -38,9 +39,10 @@ struct MedalWindowState {
 
 MedalWindowState gMedals;
 
-bool ChineseUi() { return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE; }
+// 语言归一化统一走 niuma::ui（S0 LocaleFromLanguageTag，CONTRACT_096 §10）。
+bool ChineseUi() { return niuma::ui::IsChineseScript(); }
 
-const wchar_t* Ui(const wchar_t* zh, const wchar_t* en) { return ChineseUi() ? zh : en; }
+const wchar_t* Ui(const wchar_t* zh, const wchar_t* en) { return niuma::ui::Text(zh, en); }
 
 const wchar_t* MedalFontFamily() {
   static const wchar_t* available = [] {
@@ -186,12 +188,12 @@ void PaintMedals(Gdiplus::Graphics& graphics, const MedalViewData& data, bool ex
     Gdiplus::Pen rulePen(rule, 1);
     graphics.DrawLine(&rulePen, 28.0f, 650.0f, W - 28, 650.0f);
   }
-  DrawText(graphics, Ui(
-      L"勋章按自然日 / 自然周（周一–周日）/ 自然月归集，达到阈值即永久点亮并记录次数。"
-      L"阈值为占位值（thresholds_version = ",
-      L"Medals tally by natural day / week (Mon–Sun) / month; reaching a threshold permanently unlocks it and records the count. Thresholds are placeholders (thresholds_version = ") +
-      data.thresholdsVersion + Ui(L"）。", L")."),
-      Gdiplus::RectF(28, 662, W - 56, 46), 11, muted, false);
+  wchar_t thresholds[512] = {};
+  swprintf_s(thresholds, std::size(thresholds), Ui(
+      L"勋章按自然日 / 自然周（周一–周日）/ 自然月归集，达到阈值即永久点亮并记录次数。阈值为占位值（thresholds_version = %s）。",
+      L"Medals tally by natural day / week (Mon–Sun) / month; reaching a threshold permanently unlocks it and records the count. Thresholds are placeholders (thresholds_version = %s)."),
+      data.thresholdsVersion.c_str());
+  DrawText(graphics, thresholds, Gdiplus::RectF(28, 662, W - 56, 46), 11, muted, false);
   DrawText(graphics, Ui(
       L"分享图由用户主动导出，单张 PNG，不含本机路径、账号或原始时段数据。",
       L"Share images are exported by the user as a single PNG with no local paths, account IDs, or raw interval data."),
@@ -268,23 +270,22 @@ void ExportSelectedMedal(HWND owner) {
   const int selected = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
   if (selected < 0) return;
   const int index = static_cast<int>(SendMessageW(combo, CB_GETITEMDATA, selected, 0));
-  const bool chinese = ChineseUi();
   ShareCardModel model;
   model.kind = ShareCardModel::Kind::Medal;
   model.title = gMedals.data.productName.empty()
-      ? (chinese ? L"牛马电子功德" : L"NiuMa Merit")
+      ? Ui(L"牛马电子功德", L"NiuMa Merit")
       : gMedals.data.productName;
   model.footerProduct = model.title;
   model.footerWatermark = L"niuma-merit 0.9.6";
   model.hasMedal = true;
   if (index == 9) {
     model.medalAchievement = true;
-    model.medalPeriod = chinese ? L"集齐成就" : L"Collector";
+    model.medalPeriod = Ui(L"集齐成就", L"Collector");
     model.medalTier = L"\u2605";
     model.medalEarnedDay = gMedals.data.achievementFirstDay;
     model.medalCount = 1;
-    model.subtitle = chinese ? L"集齐成就 · 九枚勋章全部点亮"
-                             : L"Collector Achievement · all nine medals unlocked";
+    model.subtitle = Ui(L"集齐成就 · 九枚勋章全部点亮",
+                        L"Collector Achievement · all nine medals unlocked");
   } else if (index >= 0 && index < 9) {
     const MedalCell& cell = gMedals.data.cells[static_cast<std::size_t>(index)];
     model.medalPeriod = cell.periodLabel;
@@ -298,11 +299,10 @@ void ExportSelectedMedal(HWND owner) {
     return;
   }
   std::wstring error;
-  if (!ExportSharePng(owner, model, L"niuma-merit-medal.png", chinese, &error)) {
+  if (!ExportSharePng(owner, model, L"niuma-merit-medal.png", ChineseUi(), &error)) {
     if (!error.empty())
-      niuma::ui::Message(owner,
-          chinese ? L"未能生成分享图，请稍后重试。"
-                  : L"Could not generate the share image. Please try again.",
+      niuma::ui::Message(owner, Ui(L"未能生成分享图，请稍后重试。",
+                                   L"Could not generate the share image. Please try again."),
           model.title.c_str(), MB_OK | MB_ICONWARNING);
   }
 }
@@ -409,15 +409,14 @@ void ShowMedalWindow(HWND owner, const MedalViewData& data) {
   SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
   const int width = std::min(desired.right - desired.left, work.right - work.left);
   const int height = std::min(desired.bottom - desired.top, work.bottom - work.top);
-  const bool chinese = ChineseUi();
   gMedals.window = CreateWindowExW(
-      0, kMedalClass, chinese ? L"勋章与成就" : L"Medals & Achievements", style,
+      0, kMedalClass, Ui(L"勋章与成就", L"Medals & Achievements"), style,
       work.left + (work.right - work.left - width) / 2,
       work.top + (work.bottom - work.top - height) / 2, width, height, owner, nullptr,
       GetModuleHandleW(nullptr), nullptr);
   if (!gMedals.window) return;
   HWND toggle = CreateWindowExW(0, L"BUTTON",
-      chinese ? L"展开勋章墙" : L"Show medal wall",
+      Ui(L"展开勋章墙", L"Show medal wall"),
       WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX, 0, 0, 1, 1, gMedals.window,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMedalToggle)), GetModuleHandleW(nullptr),
       nullptr);
@@ -426,11 +425,11 @@ void ShowMedalWindow(HWND owner, const MedalViewData& data) {
       WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 0, 0, 1, 1,
       gMedals.window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMedalShareCombo)),
       GetModuleHandleW(nullptr), nullptr);
-  CreateWindowExW(0, L"BUTTON", chinese ? L"导出分享图…" : L"Export Share Image…",
+  CreateWindowExW(0, L"BUTTON", Ui(L"导出分享图…", L"Export Share Image…"),
       WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 1, 1, gMedals.window,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMedalExport)), GetModuleHandleW(nullptr),
       nullptr);
-  CreateWindowExW(0, L"BUTTON", chinese ? L"关闭" : L"Close",
+  CreateWindowExW(0, L"BUTTON", Ui(L"关闭", L"Close"),
       WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 0, 0, 1, 1, gMedals.window,
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMedalClose)), GetModuleHandleW(nullptr),
       nullptr);
