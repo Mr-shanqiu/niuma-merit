@@ -145,6 +145,10 @@ constexpr int kWindowDipWidth = 120;
 constexpr int kWindowDipHeight = 125;
 constexpr int kOffworkDipHeight = 44;
 constexpr int kEncouragerDipHeight = 84;
+// F1：形象大小（整体等比 60%–180%，默认 100%）。
+constexpr double kMinAppearanceScale = 0.6;
+constexpr double kMaxAppearanceScale = 1.8;
+constexpr double kDefaultAppearanceScale = 1.0;
 // F0 scroll gesture boundary now lives in ScrollTickCounter (shared with the
 // authoritative input thread); the legacy per-gesture debounce is gone.
 constexpr ULONGLONG kTempoResetGapMs = 600;
@@ -268,6 +272,7 @@ struct AppState {
   int encouragerStartMinute = 540;
   int encouragerEndMinute = 1080;
   bool encouragerActive = false;
+  double appearanceScale = kDefaultAppearanceScale;  // F1：prefs.appearance_scale
   std::wstring encouragerLabel;
   std::wstring encouragerAmount;
   float encouragerProgress = 0.0f;
@@ -282,6 +287,7 @@ HWND gLastFullscreenWindow = nullptr;
 void ShowContextMenu(HWND window, POINT screenPoint);void RenderLayeredWindow(ULONGLONG now);
 SYSTEMTIME CalendarToday();
 void ClampWindowToWorkArea();
+bool PositionReminderWindow(HWND popup);
 void ShowMedals(HWND owner);
 niuma::windows::window::MedalViewData BuildMedalViewData();
 void ApplyWindowVisibility();
@@ -552,6 +558,32 @@ OffworkState gOffwork;
 int MainWindowDipHeight() {
   return kWindowDipHeight + (gOffwork.enabled ? kOffworkDipHeight : 0) +
       (gState.encouragerActive ? kEncouragerDipHeight : 0);
+}
+
+int ScaleDip(int dip, UINT dpi);  // 定义在下方（DPI 换算）。
+
+// F1：把设计 DIP 按形象缩放换算后再乘 DPI。
+int AppearanceDip(int dip) {
+  return static_cast<int>(std::lround(static_cast<double>(dip) * gState.appearanceScale));
+}
+int WindowPixelWidth() { return ScaleDip(AppearanceDip(kWindowDipWidth), gState.dpi); }
+int WindowPixelHeight() { return ScaleDip(AppearanceDip(MainWindowDipHeight()), gState.dpi); }
+
+// 主窗口尺寸变化后按屏幕可用区钳制：先收缩到可用区，再夹位置。
+void ClampWindowSizeToWorkArea(int* width, int* height) {
+  if (!width || !height) return;
+  RECT rect{0, 0, *width, *height};
+  if (gState.window) GetWindowRect(gState.window, &rect);
+  // 启动时窗口尚未创建：按主显示器可用区钳制。
+  HMONITOR monitor = gState.window
+      ? MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST)
+      : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+  MONITORINFO info = {sizeof(info)};
+  if (!GetMonitorInfoW(monitor, &info)) return;
+  const int availableWidth = static_cast<int>(info.rcWork.right - info.rcWork.left);
+  const int availableHeight = static_cast<int>(info.rcWork.bottom - info.rcWork.top);
+  *width = std::clamp(*width, ScaleDip(40, gState.dpi), availableWidth);
+  *height = std::clamp(*height, ScaleDip(40, gState.dpi), availableHeight);
 }
 
 std::wstring OffworkWide(const std::string& value) {
@@ -1708,7 +1740,8 @@ bool RefreshEncourager(bool force) {
 // 选择鼓励器场景后按窗口高度重排（保持左上角并钳制到可用区）。
 void ApplyEncouragerLayout() {
   if (!gState.window) return;
-  gState.windowHeight = ScaleDip(MainWindowDipHeight(), gState.dpi);
+  gState.windowHeight = WindowPixelHeight();
+  ClampWindowSizeToWorkArea(&gState.windowWidth, &gState.windowHeight);
   SetWindowPos(gState.window, nullptr, 0, 0, gState.windowWidth, gState.windowHeight,
       SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
   ClampWindowToWorkArea();
@@ -1784,6 +1817,162 @@ void ShowMeritCurve(HWND owner) {
   const SYSTEMTIME today = CalendarToday();
   const auto data = BuildCurveData(niuma::windows::window::CurveViewMode::Day, today);
   niuma::windows::window::ShowCurveWindow(owner, data);
+}
+
+// ---- F1 形象大小：prefs 载入 / 应用 / 连续滑块 ----
+
+// 侧车 prefs.appearance_scale；缺失或越界回落 100%（CONTRACT §3）。
+void LoadPrefs() {
+  if (!gMetricsReady) return;
+  const double scale = gMetrics.prefs().appearance_scale;
+  gState.appearanceScale = (scale >= kMinAppearanceScale && scale <= kMaxAppearanceScale)
+      ? scale : kDefaultAppearanceScale;
+}
+
+// 应用缩放：窗口/角色/气泡整体等比；按屏幕可用区钳制。persist 时写侧车。
+void ApplyAppearanceScale(double scale, bool persist) {
+  gState.appearanceScale = std::clamp(scale, kMinAppearanceScale, kMaxAppearanceScale);
+  if (gState.window) {
+    gState.windowWidth = WindowPixelWidth();
+    gState.windowHeight = WindowPixelHeight();
+    ClampWindowSizeToWorkArea(&gState.windowWidth, &gState.windowHeight);
+    SetWindowPos(gState.window, nullptr, 0, 0, gState.windowWidth, gState.windowHeight,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    ClampWindowToWorkArea();
+    RenderLayeredWindow(GetTickCount64());
+    if (gReminderWindow) PositionReminderWindow(gReminderWindow);
+  }
+  if (persist && gMetricsReady) {
+    gMetrics.prefs().appearance_scale = gState.appearanceScale;
+    gMetrics.MarkDirty();
+    gMetrics.Flush(TodayLocalDateKey());
+  }
+}
+
+constexpr int kScaleSlider = 5301;
+constexpr int kScaleValueLabel = 5302;
+double gScaleBeforeDialog = kDefaultAppearanceScale;
+
+std::wstring ScalePercentText(double scale) {
+  return std::to_wstring(static_cast<int>(std::lround(scale * 100.0))) + L"%";
+}
+
+INT_PTR CALLBACK AppearanceScaleDialogProcedure(HWND window, UINT message, WPARAM wParam, LPARAM) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      SetWindowTextW(window, UiText(L"形象大小", L"Appearance Size"));
+      const UINT dpi = gState.dpi ? gState.dpi : 96;
+      const auto control = [window, dpi](const wchar_t* cls, const wchar_t* text,
+          DWORD style, int x, int y, int width, int height, int id) {
+        HWND child = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style,
+            ScaleDip(x, dpi), ScaleDip(y, dpi), ScaleDip(width, dpi), ScaleDip(height, dpi),
+            window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+            GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(
+            GetWindowLongPtrW(window, GWLP_USERDATA)), TRUE);
+        return child;
+      };
+      const HFONT font = CreateFontW(-ScaleDip(14, dpi), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
+          FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+          DEFAULT_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+      SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(font ? font :
+          GetStockObject(DEFAULT_GUI_FONT)));
+      SetWindowLongPtrW(window, DWLP_USER, reinterpret_cast<LONG_PTR>(font));
+
+      control(L"STATIC", UiText(L"拖动滑块实时预览；窗口、角色与气泡一起等比缩放。",
+                                L"Drag to preview live; the window, character and bubble scale together."),
+          0, 20, 16, 380, 40, -1);
+      HWND slider = control(L"msctls_trackbar32", L"",
+          TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 20, 62, 280, 40, kScaleSlider);
+      SendMessageW(slider, TBM_SETRANGE, TRUE, MAKELPARAM(60, 180));
+      SendMessageW(slider, TBM_SETTICFREQ, 10, 0);
+      SendMessageW(slider, TBM_SETPAGESIZE, 0, 10);
+      SendMessageW(slider, TBM_SETPOS, TRUE,
+                   static_cast<LPARAM>(std::lround(gState.appearanceScale * 100.0)));
+      control(L"STATIC", ScalePercentText(gState.appearanceScale).c_str(), 0,
+          310, 66, 90, 28, kScaleValueLabel);
+      control(L"STATIC", UiText(L"60%", L"60%"), 0, 20, 104, 60, 22, -1);
+      control(L"STATIC", UiText(L"180%", L"180%"), 0, 240, 104, 60, 22, -1);
+      control(L"STATIC", UiText(
+          L"仅影响本机显示大小；不改变功德计数、日历、曲线或勋章数据。\r\n"
+          L"极限档会自动收进屏幕可用区，不超出屏幕。",
+          L"Affects local display size only; merit counts, calendar, curve and medals are unchanged.\r\n"
+          L"At extreme sizes the widget is clamped inside the screen work area."),
+          0, 20, 130, 380, 56, -1);
+      control(L"BUTTON", UiText(L"取消", L"Cancel"), WS_TABSTOP | BS_PUSHBUTTON,
+          214, 196, 86, 32, IDCANCEL);
+      control(L"BUTTON", UiText(L"保存", L"Save"), WS_TABSTOP | BS_DEFPUSHBUTTON,
+          310, 196, 86, 32, IDOK);
+
+      RECT rect = {0, 0, ScaleDip(416, dpi), ScaleDip(248, dpi)};
+      AdjustWindowRectEx(&rect, WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
+          FALSE, WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT);
+      MONITORINFO monitor = {sizeof(monitor)};
+      GetMonitorInfoW(MonitorFromWindow(GetWindow(window, GW_OWNER), MONITOR_DEFAULTTONEAREST),
+                      &monitor);
+      const int width = rect.right - rect.left, height = rect.bottom - rect.top;
+      niuma::ui::Apply(window);
+      SetWindowPos(window, nullptr,
+          monitor.rcWork.left + std::max(0, static_cast<int>(
+              monitor.rcWork.right - monitor.rcWork.left - width) / 2),
+          monitor.rcWork.top + std::max(0, static_cast<int>(
+              monitor.rcWork.bottom - monitor.rcWork.top - height) / 2),
+          width, height, SWP_NOZORDER);
+      gScaleBeforeDialog = gState.appearanceScale;
+      return TRUE;
+    }
+    case WM_HSCROLL: {
+      if (reinterpret_cast<HWND>(lParam) == GetDlgItem(window, kScaleSlider)) {
+        const int position = static_cast<int>(
+            SendDlgItemMessageW(window, kScaleSlider, TBM_GETPOS, 0, 0));
+        const double scale = std::clamp(position / 100.0, kMinAppearanceScale,
+                                        kMaxAppearanceScale);
+        ApplyAppearanceScale(scale, false);
+        SetDlgItemTextW(window, kScaleValueLabel, ScalePercentText(scale).c_str());
+        return TRUE;
+      }
+      break;
+    }
+    case WM_COMMAND:
+      if (LOWORD(wParam) == IDOK) {
+        const int position = static_cast<int>(
+            SendDlgItemMessageW(window, kScaleSlider, TBM_GETPOS, 0, 0));
+        ApplyAppearanceScale(position / 100.0, true);
+        EndDialog(window, IDOK);
+        return TRUE;
+      }
+      if (LOWORD(wParam) == IDCANCEL) {
+        ApplyAppearanceScale(gScaleBeforeDialog, false);
+        EndDialog(window, IDCANCEL);
+        return TRUE;
+      }
+      break;
+    case WM_CLOSE:
+      ApplyAppearanceScale(gScaleBeforeDialog, false);
+      EndDialog(window, IDCANCEL);
+      return TRUE;
+    case WM_DESTROY: {
+      const auto font = reinterpret_cast<HFONT>(GetWindowLongPtrW(window, DWLP_USER));
+      if (font) DeleteObject(font);
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+void ShowAppearanceScale(HWND owner) {
+  alignas(DWORD) WORD storage[64] = {};
+  auto* dialog = reinterpret_cast<DLGTEMPLATE*>(storage);
+  dialog->style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME;
+  dialog->dwExtendedStyle = WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT;
+  dialog->cx = 240;
+  dialog->cy = 180;
+  if (DialogBoxIndirectParamW(GetModuleHandleW(nullptr), dialog, owner,
+                              AppearanceScaleDialogProcedure, 0) == -1) {
+    niuma::ui::Message(owner, UiText(L"无法打开形象大小设置。",
+                                    L"Unable to open appearance size settings."),
+        WindowTitle(), MB_OK | MB_ICONERROR);
+  }
 }
 
 // ---- F3 勋章：状态装配 / 历史静默补授 / 周期求值 / 勋章墙 ----
@@ -2929,13 +3118,13 @@ std::wstring ReminderWide(const char* text) {
 
 int ReminderBubbleHeight(const std::wstring& text) {
   const int dpi = static_cast<int>(gState.dpi);
-  const int width = ScaleDip(260 - 60, gState.dpi);
-  HFONT font = CreateFontW(-MulDiv(15, dpi, 96), 0, 0, 0, FW_MEDIUM,
+  const int width = ScaleDip(AppearanceDip(260 - 60), gState.dpi);
+  HFONT font = CreateFontW(-MulDiv(AppearanceDip(15), dpi, 96), 0, 0, 0, FW_MEDIUM,
       FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
   HDC dc = GetDC(nullptr);
   RECT measured{0, 0, width, 0};
-  int textHeight = ScaleDip(80, gState.dpi);
+  int textHeight = ScaleDip(AppearanceDip(80), gState.dpi);
   if (dc != nullptr) {
     HGDIOBJ previous = font ? SelectObject(dc, font) : nullptr;
     if (DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &measured,
@@ -2946,7 +3135,8 @@ int ReminderBubbleHeight(const std::wstring& text) {
     ReleaseDC(nullptr, dc);
   }
   if (font) DeleteObject(font);
-  return std::max(ScaleDip(64, gState.dpi), textHeight + ScaleDip(40, gState.dpi));
+  return std::max(ScaleDip(AppearanceDip(64), gState.dpi),
+                  textHeight + ScaleDip(AppearanceDip(40), gState.dpi));
 }
 
 bool PositionReminderWindow(HWND popup) {
@@ -2957,7 +3147,7 @@ bool PositionReminderWindow(HWND popup) {
   const HMONITOR screen = MonitorFromWindow(gState.window, MONITOR_DEFAULTTONEAREST);
   if (GetMonitorInfoW(screen, &monitor)) work = monitor.rcWork;
   else if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) return false;
-  const int width = ScaleDip(260, gState.dpi);
+  const int width = ScaleDip(AppearanceDip(260), gState.dpi);
   const int height = ReminderBubbleHeight(gReminderText);
   const int margin = ScaleDip(10, gState.dpi);
   RECT widget{};
@@ -3010,7 +3200,8 @@ LRESULT CALLBACK ReminderWindowProcedure(HWND window, UINT message,
           0, 0, ScaleDip(24, gState.dpi), ScaleDip(24, gState.dpi), window,
           reinterpret_cast<HMENU>(kReminderClose), GetModuleHandleW(nullptr), nullptr);
       if (label == nullptr || close == nullptr) return -1;
-      HFONT font = CreateFontW(-MulDiv(15, static_cast<int>(gState.dpi), 96), 0, 0, 0,
+      HFONT font = CreateFontW(-MulDiv(AppearanceDip(15), static_cast<int>(gState.dpi), 96),
+          0, 0, 0,
           FW_MEDIUM, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
       if (font != nullptr) {
@@ -3039,7 +3230,7 @@ LRESULT CALLBACK ReminderWindowProcedure(HWND window, UINT message,
     case WM_DPICHANGED: {
       const UINT dpi = HIWORD(wParam);
       if (dpi != 0) gState.dpi = dpi;
-      const HFONT font = CreateFontW(-MulDiv(15, static_cast<int>(gState.dpi), 96),
+      const HFONT font = CreateFontW(-MulDiv(AppearanceDip(15), static_cast<int>(gState.dpi), 96),
           0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
           DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
@@ -3194,7 +3385,7 @@ void PresentReminderForTrigger(niuma::reminder::ActivitySampler::Trigger trigger
   if (text.empty()) return;
 
   gReminderText = text;
-  const int width = ScaleDip(340, gState.dpi);
+  const int width = ScaleDip(AppearanceDip(340), gState.dpi);
   const int height = ReminderBubbleHeight(gReminderText);
   stage("window-create");
   HWND popup = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -5192,8 +5383,9 @@ void ApplyWindowDpi(HWND window) {
   }
 
   gState.dpi = windowDpi;
-  gState.windowWidth = ScaleDip(kWindowDipWidth, gState.dpi);
-  gState.windowHeight = ScaleDip(MainWindowDipHeight(), gState.dpi);
+  gState.windowWidth = WindowPixelWidth();
+  gState.windowHeight = WindowPixelHeight();
+  ClampWindowSizeToWorkArea(&gState.windowWidth, &gState.windowHeight);
   RECT rect = {};
   GetWindowRect(window, &rect);
   SetWindowPos(window, nullptr, rect.left, rect.top, gState.windowWidth,
@@ -5201,7 +5393,8 @@ void ApplyWindowDpi(HWND window) {
 }
 
 void ResizeOffworkWindow() {
-  gState.windowHeight = ScaleDip(MainWindowDipHeight(), gState.dpi);
+  gState.windowHeight = WindowPixelHeight();
+  ClampWindowSizeToWorkArea(&gState.windowWidth, &gState.windowHeight);
   // Preserve the pet's top-left unless the extra band would leave the work area.
   SetWindowPos(gState.window, nullptr, 0, 0, gState.windowWidth, gState.windowHeight,
       SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -5797,6 +5990,7 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
   append(kMenuCurve, UiText(L"牛马曲线…", L"Merit Curve…"), L"\xE9D2");
   append(kMenuMedals, UiText(L"勋章与成就…", L"Medals & Achievements…"), L"\xE735");
   append(kMenuEncourager, UiText(L"上班鼓励器…", L"Work Encourager…"), L"\xE8C7", gState.encouragerActive);
+  append(kMenuAppearanceScale, UiText(L"形象大小…", L"Appearance Size…"), L"\xE7A1");
   append(kMenuOffwork, UiText(L"下班倒计时…", L"Off-work Countdown…"), L"\xE823", gOffwork.enabled);
   if (IsRuntimeCandidate()) {
     append(kMenuLaunchAtLogin, UiText(L"测试数据 · 自动启动已禁用", L"Test data · Startup disabled"), L"\xE7F4", false, true);
@@ -5861,6 +6055,8 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
     ShowMedals(window);
   } else if (command == static_cast<int>(kMenuEncourager)) {
     ShowEncouragerSettings(window);
+  } else if (command == static_cast<int>(kMenuAppearanceScale)) {
+    ShowAppearanceScale(window);
   } else if (command == static_cast<int>(kMenuOffwork)) {
     ShowOffworkSettings(window);
   } else if (command == static_cast<int>(kMenuQuit)) {
@@ -6242,8 +6438,9 @@ LRESULT CALLBACK WindowProcedure(
       const UINT newDpi = HIWORD(wParam);
       const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
       gState.dpi = newDpi == 0 ? 96 : newDpi;
-      gState.windowWidth = ScaleDip(kWindowDipWidth, gState.dpi);
-      gState.windowHeight = ScaleDip(MainWindowDipHeight(), gState.dpi);
+      gState.windowWidth = WindowPixelWidth();
+      gState.windowHeight = WindowPixelHeight();
+      ClampWindowSizeToWorkArea(&gState.windowWidth, &gState.windowHeight);
       SetWindowPos(
           window, nullptr, suggested->left, suggested->top,
           gState.windowWidth, gState.windowHeight,
@@ -6601,11 +6798,13 @@ int WINAPI wWinMain(
   gState.dpi = SystemDpi();
   LoadOffworkSettings();
   InitializeMetrics();  // F4 sidecar: degrade-only, never blocks startup.
+  LoadPrefs();            // F1: prefs.appearance_scale (defaults to 100%).
   LoadEncouragerState();  // F2: settings live in the sidecar; 0 disables.
   LoadMedalsState();      // F3: earned medals from the sidecar (degrade-only).
   if (gDataStorage.model) gVisibility.autoHideFullscreen = gDataStorage.model->current().autoHideFullscreen;
-  gState.windowWidth = ScaleDip(kWindowDipWidth, gState.dpi);
-  gState.windowHeight = ScaleDip(MainWindowDipHeight(), gState.dpi);
+  gState.windowWidth = WindowPixelWidth();
+  gState.windowHeight = WindowPixelHeight();
+  ClampWindowSizeToWorkArea(&gState.windowWidth, &gState.windowHeight);
   gState.total = ReadIniTotal();
   EnsureCurrentDay();
   const long selectedScene = ReadIniLong(L"selected_scene", 0);
