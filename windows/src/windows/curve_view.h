@@ -57,9 +57,37 @@ bool CurveWindowOpen();
 void RefreshCurveWindow(const CurveViewData& data);
 void CloseCurveWindow();
 
-// 把当前曲线快照导出为单张 PNG（白名单模型，无路径/账号/原始桶数组文本块）。
-// 返回 true 表示已写出文件；false 表示用户取消或失败（失败时由 app 层提示）。
-// suggestedName 为保存对话框默认文件名（不含路径）。
+// ---- 分享卡白名单模型（CONTRACT_096 §8.1）----
+// 渲染器只读取这里列出的字段；模型之外的任何数据（路径、账号、原始 96 桶数组、
+// 精确时间戳、日薪原始值）不得进入 PNG。输出为单张 PNG、无文本块/EXIF。
+struct ShareCardModel {
+  enum class Kind { Medal, Curve } kind = Kind::Curve;
+  std::wstring title;              // 产品名
+  std::wstring subtitle;           // 周期/档位/范围标签
+  std::wstring footerProduct;
+  std::wstring footerWatermark;    // 仅 "niuma-merit 0.9.6"
+  std::wstring generatedOn;        // 仅日期 YYYY-MM-DD
+  // 曲线卡（kind=Curve）：仅渲染用，不落盘。
+  bool hasCurve = false;
+  CurveViewData curve;
+  // 勋章卡（kind=Medal）：派生展示值，不含日薪。
+  bool hasMedal = false;
+  std::wstring medalPeriod;        // 本地化周期名（日/周/月）
+  std::wstring medalTier;          // 本地化档位名（铜/银/金）
+  std::wstring medalEarnedDay;
+  std::uint32_t medalCount = 0;
+  std::uint64_t medalValue = 0;
+  std::uint64_t medalThreshold = 0;
+  bool medalAchievement = false;
+};
+
+// 把分享卡模型渲染为单张 PNG 并弹出保存对话框。
+// 返回 true 表示已写出文件；false 表示用户取消或失败（失败时写 errorOut）。
+bool ExportSharePng(HWND owner, const ShareCardModel& model,
+                    const std::wstring& suggestedName, bool chinese,
+                    std::wstring* errorOut);
+
+// 曲线卡便捷入口。
 bool ExportCurvePng(HWND owner, const CurveViewData& data,
                     const std::wstring& suggestedName, const std::wstring& titleZh,
                     const std::wstring& titleEn, bool chinese,

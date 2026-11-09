@@ -57,6 +57,10 @@ struct Encourager {
 struct MedalEarned {
   std::string first_earned_day;  // YYYY-MM-DD，可为空（兼容旧记录）。
   std::uint32_t count = 0;
+  // 上次计数的自然周期键（"YYYY-MM-DD" / "YYYY-Www" 起点日 / "YYYY-MM"）。
+  // 新增字段（§1.1 允许）：跨重启去重同一周期，避免重复计次。
+  std::string last_period;
+  bool lit = false;  // count>0 或 first_earned_day 非空（读侧推导）。
 };
 
 struct Medals {
@@ -69,6 +73,8 @@ struct Migration {
   std::int64_t migrated_at_utc = 0;
   std::string legacy_source;  // "data_ini"；空表示无迁移收据。
   std::int64_t reconcile_at_utc = 0;  // §5.6 对账收据，0 表示未对账。
+  // §12.1 历史勋章静默补授的一次性守门（先置位再补授，防止重放重复计次）。
+  bool medals_backfilled = false;
 };
 
 struct CurveDayValue {
@@ -209,6 +215,8 @@ inline void MergeMedals(Root* root) {
     record.Set("first_earned_day",
                json::Value::MakeString(entry.second.first_earned_day));
     record.Set("count", json::Value::MakeUInt(entry.second.count));
+    if (!entry.second.last_period.empty())
+      record.Set("last_period", json::Value::MakeString(entry.second.last_period));
     earned.Set(entry.first, std::move(record));
   }
   block.Set("earned", std::move(earned));
@@ -227,6 +235,8 @@ inline void MergeMigration(Root* root) {
   if (root->migration.reconcile_at_utc > 0)
     block.Set("reconcile_at_utc",
               json::Value::MakeInt(root->migration.reconcile_at_utc));
+  if (root->migration.medals_backfilled)
+    block.Set("medals_backfilled", json::Value::MakeBool(true));
   root->tree.Set("migration", std::move(block));
 }
 
@@ -417,6 +427,9 @@ inline bool ParseMedals(const json::Value& block, Root* out) {
         continue;
       record.first_earned_day = first->Str();
     }
+    if (const json::Value* last = entry.second.Find("last_period"))
+      if (last->IsString() && last->Str().size() <= 32) record.last_period = last->Str();
+    record.lit = record.count > 0 || !record.first_earned_day.empty();
     medals.earned[entry.first] = record;
   }
   out->medals = medals;
@@ -492,6 +505,9 @@ inline bool ParseInto(const json::Value& tree, Root* out) {
         if (reconcile->IsNumber() && reconcile->Number() >= 0 &&
             reconcile->Number() == std::floor(reconcile->Number()))
           out->migration.reconcile_at_utc = reconcile->Int();
+      if (const json::Value* backfilled = block->Find("medals_backfilled"))
+        out->migration.medals_backfilled =
+            backfilled->IsBool() && backfilled->Bool();
     }
   }
   return true;

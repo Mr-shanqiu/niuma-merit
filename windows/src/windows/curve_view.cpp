@@ -2,6 +2,7 @@
 #include "curve_view.h"
 
 // GDI+ 依赖 objidl.h（IStream）与 propidl.h（PROPID），必须先于 gdiplus.h。
+#include <windowsx.h>
 #include <objidl.h>
 #include <propidl.h>
 #include <wincodec.h>
@@ -394,53 +395,78 @@ bool SavePngToFile(const std::wstring& path, Gdiplus::Bitmap& bitmap) {
 
 }  // namespace
 
-bool ExportCurvePng(HWND owner, const CurveViewData& data, const std::wstring& suggestedName,
-                    const std::wstring& titleZh, const std::wstring& titleEn, bool chinese,
+bool ExportSharePng(HWND owner, const ShareCardModel& model,
+                    const std::wstring& suggestedName, bool chinese,
                     std::wstring* errorOut) {
-  // 先渲染到内存位图（1000x1250 分享卡比例，便于社交分享）。
-  const int imageWidth = 1000, imageHeight = 1000;
+  // 单张 PNG，1000x1250 分享卡；只渲染白名单字段。
+  const int imageWidth = 1000, imageHeight = 1250;
   Gdiplus::Bitmap bitmap(imageWidth, imageHeight, PixelFormat32bppARGB);
   {
     Gdiplus::Graphics graphics(&bitmap);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
     Gdiplus::SolidBrush background(Gdiplus::Color(255, 250, 248, 244));
-    graphics.FillRectangle(&background, Gdiplus::RectF(0, 0, static_cast<Gdiplus::REAL>(imageWidth), static_cast<Gdiplus::REAL>(imageHeight)));
-    // 页眉
-    const Gdiplus::Color ink(255, 29, 29, 31), muted(255, 110, 110, 115);
-    DrawText(graphics, chinese ? titleZh : titleEn,
-             Gdiplus::RectF(48, 40, imageWidth - 96, 44), 30, ink, true);
-    std::wstring subtitle;
-    if (data.mode == CurveViewMode::Day)
-      subtitle = chinese ? (L"今日 96 桶 · " + data.todayKey)
-                         : (L"Today, 96 buckets · " + data.todayKey);
-    else if (data.mode == CurveViewMode::Week)
-      subtitle = chinese ? L"本周每日功德（周一–周日）" : L"Daily merit this week (Mon–Sun)";
-    else {
-      wchar_t buffer[64] = {};
-      swprintf_s(buffer, std::size(buffer), chinese ? L"%d 年 %d 月每日功德" : L"Daily merit %d / %d",
-                 data.year, data.month);
-      subtitle = buffer;
+    graphics.FillRectangle(&background, Gdiplus::RectF(
+        0, 0, static_cast<Gdiplus::REAL>(imageWidth),
+        static_cast<Gdiplus::REAL>(imageHeight)));
+    const Gdiplus::Color ink(255, 29, 29, 31), muted(255, 110, 110, 115),
+        accent(255, 240, 139, 35), rule(255, 228, 224, 218);
+    DrawText(graphics, model.title, Gdiplus::RectF(56, 48, imageWidth - 112, 52), 34, ink, true);
+    if (!model.subtitle.empty())
+      DrawText(graphics, model.subtitle, Gdiplus::RectF(56, 104, imageWidth - 112, 30), 18,
+               muted, false);
+    Gdiplus::Pen line(rule, 1);
+    graphics.DrawLine(&line, 56.0f, 148.0f,
+                      static_cast<Gdiplus::REAL>(imageWidth - 56), 148.0f);
+
+    if (model.kind == ShareCardModel::Kind::Curve && model.hasCurve) {
+      const float scale = std::min((imageWidth - 112.0f) / kCurveWidth,
+                                   (900.0f) / kCurveHeight);
+      Gdiplus::GraphicsState state = graphics.Save();
+      graphics.TranslateTransform(56.0f, 190.0f);
+      graphics.ScaleTransform(scale, scale);
+      PaintCurve(graphics, model.curve, chinese);
+      graphics.Restore(state);
+    } else if (model.kind == ShareCardModel::Kind::Medal) {
+      // 勋章卡：档位圆章 + 周期/首次获得/次数/当期功德。
+      const float cx = imageWidth / 2.0f;
+      Gdiplus::SolidBrush disc(Gdiplus::Color(255, 255, 241, 231));
+      Gdiplus::Pen ring(accent, 6.0f);
+      graphics.FillEllipse(&disc, Gdiplus::RectF(cx - 150, 210, 300, 300));
+      graphics.DrawEllipse(&ring, Gdiplus::RectF(cx - 150, 210, 300, 300));
+      DrawText(graphics, model.medalTier, Gdiplus::RectF(cx - 150, 320, 300, 80), 56, accent,
+               true, Gdiplus::StringAlignmentCenter);
+      DrawText(graphics, model.medalPeriod, Gdiplus::RectF(cx - 150, 250, 300, 40), 26, ink,
+               true, Gdiplus::StringAlignmentCenter);
+      float y = 560;
+      const auto row = [&](const std::wstring& label, const std::wstring& value) {
+        DrawText(graphics, label, Gdiplus::RectF(120, y, 320, 34), 20, muted, false);
+        DrawText(graphics, value, Gdiplus::RectF(440, y, 440, 34), 22, ink, true);
+        y += 52;
+      };
+      row(chinese ? L"本期功德" : L"Period merit", Number(model.medalValue));
+      if (model.medalThreshold > 0)
+        row(chinese ? L"达成阈值" : L"Threshold", Number(model.medalThreshold));
+      if (!model.medalEarnedDay.empty())
+        row(chinese ? L"首次获得" : L"First earned", model.medalEarnedDay);
+      row(chinese ? L"累计次数" : L"Times earned", std::to_wstring(model.medalCount));
+      if (model.medalAchievement)
+        DrawText(graphics, chinese ? L"集齐成就 · 九枚全部点亮" : L"Collector · all nine unlocked",
+                 Gdiplus::RectF(120, y + 10, 760, 40), 22, accent, true);
     }
-    DrawText(graphics, subtitle, Gdiplus::RectF(48, 90, imageWidth - 96, 26), 16, muted, false);
-    // 主体绘图区：把曲线以设计坐标平移缩放进卡面。
-    Gdiplus::GraphicsState state = graphics.Save();
-    const float scale = std::min((imageWidth - 96.0f) / kCurveWidth,
-                                 (imageHeight - 260.0f) / kCurveHeight);
-    graphics.TranslateTransform(48.0f, 150.0f);
-    graphics.ScaleTransform(scale, scale);
-    PaintCurve(graphics, data, chinese);
-    graphics.Restore(state);
-    // 页脚水印（仅产品名/版本，无路径/账号）。
-    DrawText(graphics, chinese ? L"牛马电子功德" : L"NiuMa Merit",
-             Gdiplus::RectF(48, imageHeight - 70, 400, 30), 16, muted, false);
-    DrawText(graphics, L"niuma-merit 0.9.6",
-             Gdiplus::RectF(imageWidth - 348, imageHeight - 70, 300, 30), 14, muted, false,
-             Gdiplus::StringAlignmentFar);
+    if (!model.footerProduct.empty())
+      DrawText(graphics, model.footerProduct,
+               Gdiplus::RectF(56, imageHeight - 92, 400, 30), 18, muted, false);
+    if (!model.footerWatermark.empty())
+      DrawText(graphics, model.footerWatermark,
+               Gdiplus::RectF(imageWidth - 456, imageHeight - 92, 400, 30), 15, muted, false,
+               Gdiplus::StringAlignmentFar);
+    if (!model.generatedOn.empty())
+      DrawText(graphics, model.generatedOn,
+               Gdiplus::RectF(56, imageHeight - 56, 400, 24), 13, muted, false);
     graphics.Flush(Gdiplus::FlushIntentionSync);
   }
 
-  // 保存对话框（comdlg32）。
   wchar_t fileBuffer[MAX_PATH] = {};
   if (!suggestedName.empty()) wcsncpy_s(fileBuffer, suggestedName.c_str(), _TRUNCATE);
   OPENFILENAMEW ofn{};
@@ -457,6 +483,31 @@ bool ExportCurvePng(HWND owner, const CurveViewData& data, const std::wstring& s
     return false;
   }
   return true;
+}
+
+bool ExportCurvePng(HWND owner, const CurveViewData& data, const std::wstring& suggestedName,
+                    const std::wstring& titleZh, const std::wstring& titleEn, bool chinese,
+                    std::wstring* errorOut) {
+  ShareCardModel model;
+  model.kind = ShareCardModel::Kind::Curve;
+  model.title = chinese ? titleZh : titleEn;
+  model.footerProduct = chinese ? titleZh : titleEn;
+  model.footerWatermark = L"niuma-merit 0.9.6";
+  model.generatedOn = data.todayKey;
+  model.hasCurve = true;
+  model.curve = data;
+  if (data.mode == CurveViewMode::Day)
+    model.subtitle = chinese ? (L"今日 96 桶 · " + data.todayKey)
+                             : (L"Today, 96 buckets · " + data.todayKey);
+  else if (data.mode == CurveViewMode::Week)
+    model.subtitle = chinese ? L"本周每日功德（周一–周日）" : L"Daily merit this week (Mon–Sun)";
+  else {
+    wchar_t buffer[64] = {};
+    swprintf_s(buffer, std::size(buffer),
+               chinese ? L"%d 年 %d 月每日功德" : L"Daily merit %d / %d", data.year, data.month);
+    model.subtitle = buffer;
+  }
+  return ExportSharePng(owner, model, suggestedName, chinese, errorOut);
 }
 
 }  // namespace niuma::windows::window

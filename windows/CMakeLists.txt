@@ -51,7 +51,7 @@ foreach(asset IN ITEMS woodfish.png mallet.png douyin-group-qr.png appicon.ico)
 endforeach()
 add_executable(niuma-merit WIN32
   src/windows/app.cpp src/windows/self_install.cpp src/windows/appearance_pack.cpp
-  src/windows/curve_view.cpp
+  src/windows/curve_view.cpp src/windows/medal_view.cpp
   src/windows/runtime/metrics_runtime.cpp
   third_party/miniz/miniz.c "${CMAKE_CURRENT_BINARY_DIR}/niuma-app.rc")
 target_include_directories(niuma-merit PRIVATE src/windows third_party/miniz "${CMAKE_CURRENT_BINARY_DIR}")

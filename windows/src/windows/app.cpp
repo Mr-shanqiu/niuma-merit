@@ -35,6 +35,8 @@
 #include "../client/core/visibility_state.h"
 #include "../client/core/scroll_tick_counter.h"
 #include "../client/core/work_encourager.h"
+#include "../client/core/medals.h"
+#include "medal_view.h"
 #include "../calendar_month_range.h"
 #include "../reminder_activity.h"
 #include "../reminder_geometry.h"
@@ -280,6 +282,8 @@ HWND gLastFullscreenWindow = nullptr;
 void ShowContextMenu(HWND window, POINT screenPoint);void RenderLayeredWindow(ULONGLONG now);
 SYSTEMTIME CalendarToday();
 void ClampWindowToWorkArea();
+void ShowMedals(HWND owner);
+niuma::windows::window::MedalViewData BuildMedalViewData();
 void ApplyWindowVisibility();
 void RefreshFullscreenVisibility();
 
@@ -430,6 +434,9 @@ ULONGLONG gFallbackLastScrollMs = 0;
 // from input callbacks or the render path).
 niuma::windows::runtime::MetricsRuntime gMetrics;
 bool gMetricsReady = false;
+niuma::medal::EarnedMap gMedalEarned;
+bool gMedalDirty = false;
+bool gMedalsReady = false;
 ULONGLONG gLastCurveHeartbeatMs = 0;
 std::vector<std::string> gNewlyImportedIds;
 std::vector<std::string> gLastImportedIds;
@@ -1621,10 +1628,21 @@ void PumpMetrics() {
 
 // ---- F2 上班鼓励器：设置装配 / 每秒求值 / 底栏文本 ----
 
+bool RefreshEncourager(bool force);  // 定义在下方；LoadEncouragerState 会调用。
+
 const char* UiLanguageTag() { return IsChineseUi() ? "zh-Hans" : "en"; }
 
 std::wstring EncouragerWide(const std::string& value) {
   return std::wstring(value.begin(), value.end());
+}
+
+// ISO 4217 代码等 ASCII 字面量 → std::string（不做本地化转换）。
+std::string AsciiFromWide(const wchar_t* text) {
+  std::string out;
+  if (!text) return out;
+  for (const wchar_t* p = text; *p; ++p)
+    if (*p < 128) out.push_back(static_cast<char>(*p));
+  return out;
 }
 
 niuma::encourager::Window EncouragerWindow() {
@@ -1766,6 +1784,193 @@ void ShowMeritCurve(HWND owner) {
   const SYSTEMTIME today = CalendarToday();
   const auto data = BuildCurveData(niuma::windows::window::CurveViewMode::Day, today);
   niuma::windows::window::ShowCurveWindow(owner, data);
+}
+
+// ---- F3 勋章：状态装配 / 历史静默补授 / 周期求值 / 勋章墙 ----
+
+void LoadMedalsState() {
+  gMedalEarned.clear();
+  gMedalDirty = false;
+  // 侧车不可用时仍可求值（只降级持久化，不停止勋章判定，§5.3）。
+  gMedalsReady = true;
+  if (!gMetricsReady) return;
+  for (const auto& entry : gMetrics.medals().earned) {
+    niuma::medal::Earned value;
+    value.first_earned_day = entry.second.first_earned_day;
+    value.count = entry.second.count;
+    value.last_period = entry.second.last_period;
+    value.lit = entry.second.lit || value.count > 0 || !value.first_earned_day.empty();
+    gMedalEarned[entry.first] = value;
+  }
+}
+
+// 把内存勋章映射写回侧车（保留 last_period，跨重启去重同周期计次）。
+void FlushMedals() {
+  if (!gMetricsReady) { gMedalDirty = false; return; }
+  auto& medals = gMetrics.medals();
+  medals.thresholds_version = niuma::metrics::kThresholdsVersion;
+  medals.earned.clear();
+  for (const auto& entry : gMedalEarned) {
+    niuma::metrics::MedalEarned record;
+    record.first_earned_day = entry.second.first_earned_day;
+    record.count = entry.second.count;
+    record.last_period = entry.second.last_period;
+    record.lit = entry.second.lit;
+    medals.earned[entry.first] = std::move(record);
+  }
+  gMetrics.MarkDirty();
+  gMetrics.Flush(TodayLocalDateKey());
+  gMedalDirty = false;
+}
+
+// 拆本地日键（"YYYY-MM-DD"）为年月日。失败返回 false。
+bool SplitDateKey(const std::string& key, int* y, int* m, int* d) {
+  return niuma::curve::ParseDateKey(key, y, m, d);
+}
+
+// §12.1 历史静默补授：一次性（migration.medals_backfilled 先置位再补授）。
+// 不弹窗、不写曲线数据；重放会对跨多周期获得的勋章重复计次，故必须守门。
+void EnsureMedalsBackfilled() {
+  if (!gMetricsReady || gMetrics.migration().medals_backfilled) return;
+  gMetrics.migration().medals_backfilled = true;
+  gMetrics.MarkDirty();
+  // 先落盘守门标记，再补授（中途失败也不会下次重复计次）。
+  gMetrics.Flush(TodayLocalDateKey());
+
+  std::vector<std::string> dayKeys;
+  const auto pushKey = [&](const std::wstring& wide) {
+    const std::string narrow(wide.begin(), wide.end());
+    int y = 0, m = 0, d = 0;
+    if (SplitDateKey(narrow, &y, &m, &d)) dayKeys.push_back(narrow);
+  };
+  if (gDataStorage.model) {
+    for (const auto& entry : gDataStorage.model->current().counts.daily) {
+      int y = 0, m = 0, d = 0;
+      const auto date = entry.first;
+      if (!input_core::InputCore::ValidDate(date)) continue;
+      y = static_cast<int>(date / 10000);
+      m = static_cast<int>((date / 100) % 100);
+      d = static_cast<int>(date % 100);
+      if (SplitDateKey(niuma::curve::FormatDateKey(y, m, d), &y, &m, &d))
+        dayKeys.push_back(niuma::curve::FormatDateKey(y, m, d));
+    }
+  }
+  if (gInput.authoritative)
+    for (const auto& entry : gInput.daily) {
+      if (!input_core::InputCore::ValidDate(entry.date)) continue;
+      const int y = static_cast<int>(entry.date / 10000);
+      const int m = static_cast<int>((entry.date / 100) % 100);
+      const int d = static_cast<int>(entry.date % 100);
+      dayKeys.push_back(niuma::curve::FormatDateKey(y, m, d));
+    }
+  for (const auto& entry : gState.pendingDailyTotals) pushKey(entry.first);
+  if (!gState.currentDay.empty()) pushKey(gState.currentDay);
+  std::sort(dayKeys.begin(), dayKeys.end());
+  dayKeys.erase(std::unique(dayKeys.begin(), dayKeys.end()), dayKeys.end());
+
+  const bool changed = niuma::medal::BackfillHistory(&gMedalEarned,
+      niuma::medal::BuiltinThresholds(), dayKeys,
+      [](const std::string& day) -> std::uint64_t {
+        return ReadDailyTotal(WideFromUtf8(day));
+      });
+  if (changed) gMedalDirty = true;
+  FlushMedals();
+}
+
+// 给定周期读取当期累计（日=当日；周/月=按旧 [daily] 求和）。
+std::uint64_t MedalPeriodValue(niuma::medal::Period period, const SYSTEMTIME& today) {
+  const std::wstring todayKey = DateKey(today);
+  if (period == niuma::medal::Period::Day) return ReadDailyTotal(todayKey);
+  std::vector<std::string> keys = period == niuma::medal::Period::Week
+      ? niuma::curve::WeekDayKeys(today.wYear, today.wMonth, today.wDay)
+      : niuma::curve::MonthDayKeys(today.wYear, today.wMonth);
+  return niuma::medal::SumRange(keys, [](const std::string& key) -> std::uint64_t {
+    return ReadDailyTotal(WideFromUtf8(key));
+  });
+}
+
+// 求值三周期 + 集齐成就；变化则标脏并落盘，勋章墙可见时刷新。
+void EvaluateMedals() {
+  if (!gMedalsReady) return;
+  const SYSTEMTIME today = CalendarToday();
+  const std::wstring todayKey = DateKey(today);
+  const std::string todayNarrow(todayKey.begin(), todayKey.end());
+  const auto thresholds = niuma::medal::BuiltinThresholds();
+  bool changed = false;
+  changed |= niuma::medal::EvaluatePeriod(&gMedalEarned, niuma::medal::Period::Day,
+      thresholds, niuma::medal::DayPeriodKey(todayNarrow), todayNarrow,
+      MedalPeriodValue(niuma::medal::Period::Day, today));
+  const std::string weekKey = niuma::medal::WeekPeriodKey(today.wYear, today.wMonth, today.wDay);
+  changed |= niuma::medal::EvaluatePeriod(&gMedalEarned, niuma::medal::Period::Week,
+      thresholds, weekKey, todayNarrow, MedalPeriodValue(niuma::medal::Period::Week, today));
+  const std::string monthKey = niuma::medal::MonthPeriodKey(today.wYear, today.wMonth);
+  changed |= niuma::medal::EvaluatePeriod(&gMedalEarned, niuma::medal::Period::Month,
+      thresholds, monthKey, todayNarrow, MedalPeriodValue(niuma::medal::Period::Month, today));
+  changed |= niuma::medal::UpdateAchievement(&gMedalEarned, todayNarrow);
+  if (changed) {
+    gMedalDirty = true;
+    FlushMedals();
+    if (niuma::windows::window::MedalWindowOpen())
+      niuma::windows::window::RefreshMedalWindow(BuildMedalViewData());
+  }
+}
+
+std::wstring MedalPeriodLabel(niuma::medal::Period period) {
+  switch (period) {
+    case niuma::medal::Period::Day: return UiText(L"日", L"Day");
+    case niuma::medal::Period::Week: return UiText(L"周", L"Week");
+    case niuma::medal::Period::Month: return UiText(L"月", L"Month");
+  }
+  return UiText(L"日", L"Day");
+}
+
+std::wstring MedalTierLabel(int tier) {
+  if (tier == 0) return UiText(L"铜", L"Bronze");
+  if (tier == 1) return UiText(L"银", L"Silver");
+  return UiText(L"金", L"Gold");
+}
+
+niuma::windows::window::MedalViewData BuildMedalViewData() {
+  using niuma::windows::window::MedalCell;
+  using niuma::windows::window::MedalViewData;
+  MedalViewData data;
+  const SYSTEMTIME today = CalendarToday();
+  const auto thresholds = niuma::medal::BuiltinThresholds();
+  int litCount = 0;
+  for (int row = 0; row < 3; ++row) {
+    const auto period = static_cast<niuma::medal::Period>(row);
+    for (int tier = 0; tier < 3; ++tier) {
+      const int index = row * 3 + tier;
+      MedalCell& cell = data.cells[static_cast<std::size_t>(index)];
+      const std::string keyName = niuma::medal::MedalKey(period, tier);
+      cell.key = WideFromUtf8(keyName);
+      cell.periodLabel = MedalPeriodLabel(period);
+      cell.tierLabel = MedalTierLabel(tier);
+      cell.threshold = thresholds.For(period)[tier];
+      cell.currentValue = MedalPeriodValue(period, today);
+      const auto it = gMedalEarned.find(keyName);
+      if (it != gMedalEarned.end() && it->second.lit) {
+        cell.lit = true;
+        cell.firstEarnedDay = WideFromUtf8(it->second.first_earned_day);
+        cell.count = it->second.count;
+        ++litCount;
+      }
+    }
+  }
+  data.litCount = litCount;
+  data.achievementLit = niuma::medal::AllMedalsLit(gMedalEarned);
+  const auto achievement = gMedalEarned.find("achievement.all");
+  if (achievement != gMedalEarned.end() && achievement->second.lit)
+    data.achievementFirstDay = WideFromUtf8(achievement->second.first_earned_day);
+  data.thresholdsVersion = WideFromUtf8(niuma::metrics::kThresholdsVersion);
+  data.productName = WindowTitle();
+  return data;
+}
+
+void ShowMedals(HWND owner) {
+  if (!gMedalsReady) LoadMedalsState();
+  EvaluateMedals();
+  niuma::windows::window::ShowMedalWindow(owner, BuildMedalViewData());
 }
 
 // 曲线窗口打开时随数据刷新（保留用户当前选择的视图）。
@@ -3172,6 +3377,7 @@ void ApplyInputView(const input_runtime::InputServiceSnapshot& snapshot) {
     if (!wasRunning || !gState.striking) RenderLayeredWindow(now);
     if (gCalendar.window) InvalidateRect(gCalendar.window, nullptr, FALSE);
     RefreshCurveIfOpen();
+    EvaluateMedals();
   }
   if (previousDate != gState.currentDay) RequestInputLedger();
 #if defined(NIUMA_RUNTIME_ENTRY_PROBE)
@@ -5298,7 +5504,7 @@ INT_PTR CALLBACK EncouragerDialogProcedure(HWND window, UINT message, WPARAM wPa
           gState.encouragerDailyWageMinor, exponent, ""));
       SetDlgItemTextW(window, kEncouragerWage, wageText.c_str());
       for (int i = 0; i < static_cast<int>(std::size(kEncouragerCurrencies)); ++i) {
-        if (code == std::string(kEncouragerCurrencies[i].code)) {
+        if (code == AsciiFromWide(kEncouragerCurrencies[i].code)) {
           SendDlgItemMessageW(window, kEncouragerCurrencyCombo, CB_SETCURSEL, i, 0);
           break;
         }
@@ -5329,7 +5535,7 @@ INT_PTR CALLBACK EncouragerDialogProcedure(HWND window, UINT message, WPARAM wPa
         std::string code = EffectiveCurrencyCode();
         if (overrideCurrency && selected >= 0 &&
             selected < static_cast<int>(std::size(kEncouragerCurrencies)))
-          code = kEncouragerCurrencies[selected].code;
+          code = AsciiFromWide(kEncouragerCurrencies[selected].code);
         const int exponent = niuma::encourager::ExponentForCode(code);
         wchar_t wageBuffer[64] = {};
         GetDlgItemTextW(window, kEncouragerWage, wageBuffer, std::size(wageBuffer));
@@ -5589,6 +5795,7 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
   append(kMenuAppearance, UiText(L"更换形象", L"Change Appearance"), L"\xE77B");
   append(kMenuCalendar, UiText(L"功德日历…", L"Merit Calendar…"), L"\xE787");
   append(kMenuCurve, UiText(L"牛马曲线…", L"Merit Curve…"), L"\xE9D2");
+  append(kMenuMedals, UiText(L"勋章与成就…", L"Medals & Achievements…"), L"\xE735");
   append(kMenuEncourager, UiText(L"上班鼓励器…", L"Work Encourager…"), L"\xE8C7", gState.encouragerActive);
   append(kMenuOffwork, UiText(L"下班倒计时…", L"Off-work Countdown…"), L"\xE823", gOffwork.enabled);
   if (IsRuntimeCandidate()) {
@@ -5650,6 +5857,8 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
     ShowMeritCalendar(window);
   } else if (command == static_cast<int>(kMenuCurve)) {
     ShowMeritCurve(window);
+  } else if (command == static_cast<int>(kMenuMedals)) {
+    ShowMedals(window);
   } else if (command == static_cast<int>(kMenuEncourager)) {
     ShowEncouragerSettings(window);
   } else if (command == static_cast<int>(kMenuOffwork)) {
@@ -5941,6 +6150,11 @@ LRESULT CALLBACK WindowProcedure(
           SendInputCommand(command);
         }
         PumpMetrics();
+        // F3：首次进入定时器（输入已启动、旧 [daily] 完整）时静默补授一次，
+        // 之后每秒求值（变化才落盘/刷新勋章墙）。
+        if (!gMedalsReady) LoadMedalsState();
+        EnsureMedalsBackfilled();
+        EvaluateMedals();
         // F2：每秒求值上班鼓励器；仅文本/进度/窗口高度变化时重绘。
         {
           const bool wasActive = gState.encouragerActive;
@@ -5993,6 +6207,7 @@ LRESULT CALLBACK WindowProcedure(
         } else if (EnsureCurrentDay()) RenderLayeredWindow(GetTickCount64());
         if (gCalendar.window != nullptr) InvalidateRect(gCalendar.window, nullptr, FALSE);
         RefreshCurveIfOpen();
+        EvaluateMedals();
         return 0;
       }
       if (wParam == kAnimationTimer && gVisibility.hidden()) {
@@ -6387,6 +6602,7 @@ int WINAPI wWinMain(
   LoadOffworkSettings();
   InitializeMetrics();  // F4 sidecar: degrade-only, never blocks startup.
   LoadEncouragerState();  // F2: settings live in the sidecar; 0 disables.
+  LoadMedalsState();      // F3: earned medals from the sidecar (degrade-only).
   if (gDataStorage.model) gVisibility.autoHideFullscreen = gDataStorage.model->current().autoHideFullscreen;
   gState.windowWidth = ScaleDip(kWindowDipWidth, gState.dpi);
   gState.windowHeight = ScaleDip(MainWindowDipHeight(), gState.dpi);
