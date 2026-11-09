@@ -6,9 +6,18 @@
 #include <cstdint>
 #include <vector>
 
+#include "merit_curve.h"
+
 namespace niuma::client::core {
 
 using LocalDate = std::uint32_t;  // YYYYMMDD, supplied at capture by the platform.
+
+// One retained curve day for the F4 15-minute buckets. Keys are local days;
+// the ring holds the retention window plus a small margin.
+struct CurveDayRecord {
+  LocalDate date = 0;                 // YYYYMMDD
+  niuma::curve::CurveDay day;
+};
 
 enum class InputKind : std::uint8_t { KeyDown, KeyUp, Click, Scroll };
 
@@ -17,6 +26,14 @@ struct InputEvent {
   bool injected = false;
   std::uint64_t monotonicMs = 0;
   LocalDate date = 0;
+  // F0: scroll distance converted to whole merit ticks by the platform layer
+  // (ScrollTickCounter). 0..kMaxTicksPerEvent; non-scroll events must use 0.
+  // A value < 0 is treated as invalid and ignored for counting.
+  int scrollTicks = 0;
+  // F4: minute of the event's local day (0..1439), captured together with
+  // `date` from one system-time read. < 0 means "not applicable" and the
+  // event contributes no bucket (coverage/mark heartbeat carry that instead).
+  int minuteOfDay = -1;
 };
 
 struct DailyTotal {
@@ -73,7 +90,10 @@ class InputCore {
  public:
   static constexpr std::size_t kDefaultDayCapacity = 4096;
   static constexpr std::size_t kMaximumDayCapacity = 65536;
-  static constexpr std::uint64_t kScrollGestureGapMs = 180;
+  // Legacy per-gesture debounce is gone (F0 counts by distance now). The
+  // gesture boundary lives in the caller's ScrollTickCounter; this gap stays
+  // only as a diagnostic fallback for callers without a counter instance.
+  static constexpr std::uint64_t kScrollGestureGapMs = 350;
   static constexpr std::uint64_t kTempoResetGapMs = 600;
   static constexpr int kDefaultStrikeMs = 220;
   static constexpr int kMinStrikeMs = 120;
@@ -106,8 +126,9 @@ class InputCore {
   std::size_t daily_size() const noexcept { return dayCount_; }
   std::size_t daily_capacity() const noexcept { return dayCapacity_; }
   bool GetDailyTotal(LocalDate date, std::uint64_t& value) const noexcept;
-  // Owner-only diagnostic expectation; uses the same gesture boundary as
-  // Observe, including a valid first pulse captured at monotonic time zero.
+  // F0 diagnostic: whether the given monotonic time would start a new scroll
+  // gesture under the legacy idle-gap rule. The counting decision itself is
+  // now made by the caller's ScrollTickCounter, not here.
   bool StartsScrollGesture(std::uint64_t monotonicMs) const noexcept;
   // Returns required size. If capacity is insufficient, writes nothing.
   // Output order is unspecified. Only call on the owner, outside callbacks.
@@ -123,7 +144,8 @@ class InputCore {
   void Fail(InputFault fault) noexcept;
   void Changed() noexcept;
   void RefreshReminderView() noexcept;
-  ObserveResult Count(std::uint64_t monotonicMs, LocalDate date) noexcept;
+  ObserveResult Count(std::uint64_t monotonicMs, LocalDate date,
+                      int operations) noexcept;
 
   std::size_t dayCapacity_;
   std::vector<DailyTotal> days_;

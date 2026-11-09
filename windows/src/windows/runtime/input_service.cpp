@@ -12,6 +12,7 @@ using client::core::InputCore;
 using client::core::InputEvent;
 using client::core::InputKind;
 using client::core::ObserveResult;
+using client::core::ScrollTickCounter;
 using Trigger = niuma::reminder::ActivitySampler::Trigger;
 
 struct InputService::Impl {
@@ -47,6 +48,10 @@ struct InputService::Impl {
   bool clockGuard = false;
   bool notifyDirty = false;
   bool viewDirty = false;  // Single input owner; flushed outside hook callbacks.
+  // F0: wheel-delta → merit ticks. Owned by this input thread only.
+  ScrollTickCounter scrollCounter;
+  bool scrollSeen = false;
+  ULONGLONG lastScrollTickMs = 0;
   ULONGLONG nextNotify = 0;
   ULONGLONG nextReminder = 0;
   std::uint64_t nextOpportunityId = 0;
@@ -125,26 +130,59 @@ struct InputService::Impl {
     }
     core.SetListenerHealth(keyboard != nullptr, mouse != nullptr);
     accepting = keyboard != nullptr || mouse != nullptr;
+    // A fresh listener generation must not inherit scroll residue or an open
+    // gesture budget from the previous generation.
+    scrollCounter.BeginGesture();
+    scrollSeen = false;
+    lastScrollTickMs = 0;
+  }
+
+  // F0: one delivery path for wheel deltas. Called exactly once per physical
+  // wheel event; returns the merit ticks this event contributes and whether
+  // it starts a new gesture.
+  struct ScrollDelivery {
+    int ticks = 0;
+    bool newGesture = false;
+  };
+  ScrollDelivery ConsumeScrollDelta(int wheelDelta, ULONGLONG now) noexcept {
+    const bool newGesture = !scrollSeen ||
+        ScrollTickCounter::IdleGapExceeded(lastScrollTickMs, now);
+    const int ticks = scrollCounter.Consume(wheelDelta, newGesture);
+    scrollSeen = true;
+    lastScrollTickMs = now;
+    return {ticks, newGesture};
   }
 
   ObserveResult Observe(InputKind kind, bool injected, ULONGLONG now,
-                        client::core::LocalDate date, bool global = true) noexcept {
+                        client::core::LocalDate date, int scrollTicks,
+                        int minuteOfDay, bool global = true) noexcept {
     auto& check = view.selfCheck;
     const bool observing = global && kind != InputKind::KeyUp && check.active &&
         now >= check.startsMs && now < check.endsMs;
-    const bool expected = kind != InputKind::Scroll || core.StartsScrollGesture(now);
+    // F0 expectation: this event's own tick count. A scroll event with zero
+    // whole ticks legitimately counts nothing (sub-tick residue).
+    const int expectedTicks =
+        kind == InputKind::Scroll ? (scrollTicks > 0 ? scrollTicks : 0) : 1;
     // Finish an elapsed action before considering this input; no historical
     // frame or UI message needs to be replayed for the core to make progress.
     core.AdvanceAnimation(now);
-    const auto result = core.Observe(InputEvent{kind, injected, now, date});
+    const auto result =
+        core.Observe(InputEvent{kind, injected, now, date, scrollTicks, minuteOfDay});
     if (global && result == ObserveResult::Counted) view.observedGlobalCount = true;
     if (observing) {
       if (kind == InputKind::KeyDown) ++check.keys;
       else if (kind == InputKind::Click) ++check.clicks;
       else ++check.scrolls;
       ++check.handled;
-      if (expected) ++check.expected;
-      if (result == ObserveResult::Counted) ++check.counted;
+      check.expected += static_cast<std::uint64_t>(expectedTicks);
+      if (result == ObserveResult::Counted) {
+        check.counted += static_cast<std::uint64_t>(expectedTicks);
+      } else if (result == ObserveResult::AccountingUnavailable &&
+                 kind == InputKind::Scroll && scrollTicks > 0) {
+        // Ticks were lost to a fault; report the shortfall instead of a
+        // phantom match, without counting them twice.
+        check.expected -= static_cast<std::uint64_t>(scrollTicks);
+      }
       check.lastRelativeMs = now - check.startsMs;
     }
     // Return to Windows before snapshot exchange or UI wake/message work.
@@ -174,7 +212,7 @@ struct InputService::Impl {
       const bool injected = (event->flags & (LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED)) != 0;
       const auto now = GetTickCount64();
       const auto result = self->Observe(down ? InputKind::KeyDown : InputKind::KeyUp, injected, now,
-                                       InputService::CaptureLocalDate());
+                                        InputService::CaptureLocalDate(), 0, -1);
 #if defined(NIUMA_INPUT_SERVICE_DIAGNOSTICS)
       if (down && result == ObserveResult::Counted && diagnostic.onCountedKey) {
         LARGE_INTEGER counted{};
@@ -215,7 +253,20 @@ struct InputService::Impl {
       }
       const auto* event = reinterpret_cast<const MSLLHOOKSTRUCT*>(data);
       const bool injected = (event->flags & (LLMHF_INJECTED | LLMHF_LOWER_IL_INJECTED)) != 0;
-      self->Observe(kind, injected, GetTickCount64(), InputService::CaptureLocalDate());
+      const auto now = GetTickCount64();
+      if (kind == InputKind::Scroll) {
+        // F0: wheel delta lives in the high word of mouseData for both
+        // WM_MOUSEWHEEL and WM_MOUSEHWHEEL. One physical event, one delta;
+        // the tick conversion happens exactly here.
+        const int wheelDelta = static_cast<short>(HIWORD(event->mouseData));
+        const auto delivery = self->ConsumeScrollDelta(wheelDelta, now);
+        const auto stamp = InputService::CaptureLocalStamp();
+        self->Observe(kind, injected, now, stamp.date, delivery.ticks,
+                      stamp.minuteOfDay);
+      } else {
+        const auto stamp = InputService::CaptureLocalStamp();
+        self->Observe(kind, injected, now, stamp.date, 0, stamp.minuteOfDay);
+      }
     }
     return CallNextHookEx(nullptr, code, message, data);
   }
@@ -329,8 +380,18 @@ struct InputService::Impl {
           // The UI captured the accounting date. Animation uses dispatch time
           // so an asynchronously delivered click cannot regress the hook clock.
           // injected=true excludes this local fallback from reminder activity.
-          Observe(InputKind::Click, true, now, command.capturedDate, false);
+          Observe(InputKind::Click, true, now, command.capturedDate, 0, -1, false);
         }
+        break;
+      case InputCommandKind::MarkCurveObserved:
+        // F4 heartbeat. The command carries the UI-captured stamp so a queued
+        // heartbeat still marks the minute it was sent for.
+        if (!InputCore::ValidDate(command.capturedDate) ||
+            command.minuteOfDay < 0 || command.minuteOfDay >= 24 * 60)
+          view.commandError = ERROR_INVALID_PARAMETER;
+        else
+          core.MarkCurveObserved(command.capturedDate,
+                                 static_cast<std::uint8_t>(command.minuteOfDay));
         break;
       case InputCommandKind::BeginSelfCheck: {
         auto& check = view.selfCheck;
@@ -480,6 +541,18 @@ client::core::LocalDate InputService::CaptureLocalDate() noexcept {
   GetLocalTime(&now);
   return static_cast<client::core::LocalDate>(now.wYear) * 10000 +
       static_cast<client::core::LocalDate>(now.wMonth) * 100 + now.wDay;
+}
+
+InputService::LocalStamp InputService::CaptureLocalStamp() noexcept {
+  // One GetLocalTime read covers both fields, so date and minute can never
+  // disagree across a midnight boundary inside one event.
+  SYSTEMTIME now{};
+  GetLocalTime(&now);
+  LocalStamp stamp;
+  stamp.date = static_cast<client::core::LocalDate>(now.wYear) * 10000 +
+      static_cast<client::core::LocalDate>(now.wMonth) * 100 + now.wDay;
+  stamp.minuteOfDay = static_cast<int>(now.wHour) * 60 + now.wMinute;
+  return stamp;
 }
 
 InputServiceStart InputService::Start(const InputServiceOptions& options) {

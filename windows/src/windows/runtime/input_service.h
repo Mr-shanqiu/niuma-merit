@@ -56,6 +56,9 @@ enum class InputCommandKind : std::uint8_t {
   LocalFallbackClick,
   BeginSelfCheck,
   ConfirmReminder,
+  // F4 heartbeat: mark the current bucket observed (true zero coverage) for
+  // the given local date/minute. Carries minuteOfDay; uses capturedDate.
+  MarkCurveObserved,
 };
 
 // One UI/control producer. A full bounded mailbox returns false; the caller
@@ -68,6 +71,8 @@ struct InputCommand {
   std::uint64_t inactiveDurationMs = 0;
   std::uint64_t capturedMs = 0;
   client::core::LocalDate capturedDate = 0;
+  // F4 heartbeat: minute of day for MarkCurveObserved (0..1439).
+  int minuteOfDay = -1;
   std::uint64_t selfCheckGeneration = 0;
   bool enabled = false;
   bool pairedSignal = false;
@@ -141,6 +146,13 @@ class InputService {
   const InputServiceStop& Stop() noexcept;
   bool running() const noexcept;
   static client::core::LocalDate CaptureLocalDate() noexcept;
+  // One system-time read yields the local date and minute together, so a
+  // 23:59:59 event cannot split its date and minute across midnight.
+  struct LocalStamp {
+    client::core::LocalDate date = 0;
+    int minuteOfDay = -1;
+  };
+  static LocalStamp CaptureLocalStamp() noexcept;
 
  private:
   struct Impl;

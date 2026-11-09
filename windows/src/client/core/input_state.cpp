@@ -144,44 +144,57 @@ bool InputCore::UpdateDate(LocalDate date) noexcept {
   return true;
 }
 
-ObserveResult InputCore::Count(std::uint64_t monotonicMs, LocalDate date) noexcept {
+ObserveResult InputCore::Count(std::uint64_t monotonicMs, LocalDate date,
+                               int operations) noexcept {
+  if (operations < 0) operations = 0;
   if (!UpdateDate(date)) {
-    Increment(view_.unaccountedOperations);
+    const std::uint64_t missing = static_cast<std::uint64_t>(operations);
+    view_.unaccountedOperations =
+        (missing > std::numeric_limits<std::uint64_t>::max() - view_.unaccountedOperations)
+            ? std::numeric_limits<std::uint64_t>::max()
+            : view_.unaccountedOperations + missing;
     return ObserveResult::AccountingUnavailable;
   }
-  constexpr auto limit = std::numeric_limits<std::uint64_t>::max();
-  if (view_.total == limit || view_.today == limit) {
-    Fail(InputFault::CounterExhausted);
-    Increment(view_.unaccountedOperations);
-    return ObserveResult::AccountingUnavailable;
+  int counted = 0;
+  while (counted < operations) {
+    constexpr auto limit = std::numeric_limits<std::uint64_t>::max();
+    if (view_.total == limit || view_.today == limit) {
+      Fail(InputFault::CounterExhausted);
+      break;
+    }
+    ++counted;
+    ++view_.total;
+    ++view_.today;
+    ++days_[currentDaySlot_].total;
+    Increment(view_.countedOperations);
   }
-  int duration = kDefaultStrikeMs;
-  if (hasCountTime_) {
-    const auto interval = monotonicMs - view_.lastInputMs;
-    if (interval <= kTempoResetGapMs) {
-      view_.intervalEmaMs = view_.intervalEmaMs * 0.65 + static_cast<double>(interval) * 0.35;
-      duration = std::clamp(static_cast<int>(std::lround(view_.intervalEmaMs * kTempoFactor)),
-                            kMinStrikeMs, kMaxStrikeMs);
-    } else {
-      view_.intervalEmaMs = static_cast<double>(kDefaultStrikeMs);
+  // Tempo/strike accounting: one tempo update and at most one new visible
+  // strike per delivery regardless of how many ticks the event carried, so
+  // F0 distance counting keeps the animation cadence stable.
+  if (counted > 0 || operations > 0) {
+    int duration = kDefaultStrikeMs;
+    if (hasCountTime_) {
+      const auto interval = monotonicMs - view_.lastInputMs;
+      if (interval <= kTempoResetGapMs) {
+        view_.intervalEmaMs = view_.intervalEmaMs * 0.65 + static_cast<double>(interval) * 0.35;
+        duration = std::clamp(static_cast<int>(std::lround(view_.intervalEmaMs * kTempoFactor)),
+                              kMinStrikeMs, kMaxStrikeMs);
+      } else {
+        view_.intervalEmaMs = static_cast<double>(kDefaultStrikeMs);
+      }
+    }
+    hasCountTime_ = true;
+    view_.lastInputMs = monotonicMs;
+    view_.suggestedDurationMs = duration;
+    if (!view_.striking) {
+      view_.striking = true;
+      view_.strikeStartedMs = monotonicMs;
+      view_.strikeDurationMs = duration;
+      Increment(view_.actionSerial);
     }
   }
-  hasCountTime_ = true;
-  view_.lastInputMs = monotonicMs;
-  view_.suggestedDurationMs = duration;
-  ++view_.total;
-  ++view_.today;
-  ++days_[currentDaySlot_].total;
-  Increment(view_.countedOperations);
-  // Exactly one current action. Further inputs update counts/tempo but never
-  // append animations or restart the currently visible strike.
-  if (!view_.striking) {
-    view_.striking = true;
-    view_.strikeStartedMs = monotonicMs;
-    view_.strikeDurationMs = duration;
-    Increment(view_.actionSerial);
-  }
-  return ObserveResult::Counted;
+  return counted == operations ? ObserveResult::Counted
+                               : ObserveResult::AccountingUnavailable;
 }
 
 ObserveResult InputCore::Observe(const InputEvent& event) noexcept {
@@ -189,7 +202,15 @@ ObserveResult InputCore::Observe(const InputEvent& event) noexcept {
   Changed();
   const bool validTime = CheckTime(event.monotonicMs);
   if (!view_.ready || !validTime) {
-    if (event.kind != InputKind::KeyUp) Increment(view_.unaccountedOperations);
+    if (event.kind != InputKind::KeyUp) {
+      const int lost = event.kind == InputKind::Scroll ? (event.scrollTicks > 0 ? event.scrollTicks : 1)
+                                                       : 1;
+      const std::uint64_t missing = static_cast<std::uint64_t>(lost);
+      view_.unaccountedOperations =
+          (missing > std::numeric_limits<std::uint64_t>::max() - view_.unaccountedOperations)
+              ? std::numeric_limits<std::uint64_t>::max()
+              : view_.unaccountedOperations + missing;
+    }
     return ObserveResult::AccountingUnavailable;
   }
   if (!event.injected) {
@@ -205,15 +226,20 @@ ObserveResult InputCore::Observe(const InputEvent& event) noexcept {
   }
   if (event.kind == InputKind::KeyUp) return ObserveResult::Ignored;
   if (event.kind == InputKind::Scroll) {
-    const bool startsGesture = StartsScrollGesture(event.monotonicMs);
+    // F0: the caller converts wheel delta into ticks; a non-positive tick
+    // count means this physical event produced no whole merit unit (sub-tick
+    // residue or exhausted gesture budget). The scroll pulse itself still
+    // fed the reminder sampler above, once per physical event.
     hasScrollTime_ = true;
     view_.lastScrollMs = event.monotonicMs;
-    if (!startsGesture) return ObserveResult::Ignored;
+    if (event.scrollTicks <= 0) return ObserveResult::Ignored;
   }
-  return Count(event.monotonicMs, event.date);
+  return Count(event.monotonicMs, event.date, event.scrollTicks);
 }
 
 bool InputCore::StartsScrollGesture(std::uint64_t monotonicMs) const noexcept {
+  // Diagnostic-only fallback boundary (350ms). Counting no longer depends on
+  // this: the caller's ScrollTickCounter owns the gesture and its budget.
   return !hasScrollTime_ || (monotonicMs >= view_.lastScrollMs &&
       monotonicMs - view_.lastScrollMs > kScrollGestureGapMs);
 }
