@@ -1,3 +1,4 @@
+#include "../ui_text.h"
 #include "embedded_scene.h"
 #include <bcrypt.h>
 #include <wincodec.h>
@@ -134,7 +135,7 @@ AppearanceSceneStatus PrepareEmbeddedWoodfishScene(const niuma::AppearanceResour
   niuma::AppearanceResourceRequest actual;
   if(!output || !EmbeddedWoodfishRequest(actual) || actual.id!=expected.id ||
       actual.sourcePath!=expected.sourcePath || actual.contentFingerprint!=expected.contentFingerprint) {
-    if(error) *error=L"内置木鱼资源身份不匹配。";
+    if(error) *error=niuma::ui::Text(L"内置木鱼资源身份不匹配。", L"The built-in woodfish resource identity does not match.");
     return AppearanceSceneStatus::Changed;
   }
   Resource body,mallet;
@@ -142,7 +143,7 @@ AppearanceSceneStatus PrepareEmbeddedWoodfishScene(const niuma::AppearanceResour
   constexpr std::size_t limit=24*1024*1024;
   if(!Read(101,body) || !Read(102,mallet) || !Decode(body,bodyPixels,limit) ||
       !Decode(mallet,malletPixels,limit-bodyPixels.bgraPremultiplied.size())) {
-    if(error) *error=L"内置木鱼资源无法完整准备。";
+    if(error) *error=niuma::ui::Text(L"内置木鱼资源无法完整准备。", L"The built-in woodfish resources could not be fully prepared.");
     return AppearanceSceneStatus::ImageUnavailable;
   }
   return PrepareWoodfishScene(std::move(bodyPixels),std::move(malletPixels),actual.contentFingerprint,

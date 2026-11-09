@@ -1,3 +1,4 @@
+#include "../ui_text.h"
 #include "appearance_scene.h"
 
 #include <wincodec.h>
@@ -79,22 +80,22 @@ AppearanceSceneStatus PrepareMask(PreparedSceneImage& image, Budget& budget,
       alphaMinimum > budget.options.residentByteLimit - resident ||
       !budget.Reserve(0, AlphaScratch(image.pixels)))
     return Fail(AppearanceSceneStatus::BudgetExceeded,
-        L"形象透明区域超过当前资源预算，未切换形象。", error);
+        niuma::ui::Text(L"形象透明区域超过当前资源预算，未切换形象。", L"The appearance's transparent region exceeds the current resource budget; the appearance was not switched."), error);
   image.alpha = niuma::runtime::PrepareAlphaMask({image.pixels.bgraPremultiplied.data(),
       image.pixels.bgraPremultiplied.size(), image.pixels.width, image.pixels.height,
       image.pixels.strideBytes}, fading, budget.options.residentByteLimit-resident);
   if (!image.alpha.success)
     return Fail(image.alpha.error.find("budget") != std::string::npos
         ? AppearanceSceneStatus::BudgetExceeded : AppearanceSceneStatus::AlphaUnavailable,
-        L"无法在当前预算内完整准备形象透明区域，未切换形象。", error);
+        niuma::ui::Text(L"无法在当前预算内完整准备形象透明区域，未切换形象。", L"The appearance's transparent region could not be fully prepared within the current budget; the appearance was not switched."), error);
   const auto bytes = image.alpha.storageBytes;
   if (bytes > budget.options.residentByteLimit - resident)
     return Fail(AppearanceSceneStatus::BudgetExceeded,
-        L"形象透明区域超过当前资源预算，未切换形象。", error);
+        niuma::ui::Text(L"形象透明区域超过当前资源预算，未切换形象。", L"The appearance's transparent region exceeds the current resource budget; the appearance was not switched."), error);
   image.alpha.storageBytes = bytes;
   budget.memory.alphaMaskBytes += bytes;
   return budget.Reserve() ? AppearanceSceneStatus::Ready :
-      Fail(AppearanceSceneStatus::BudgetExceeded, L"形象准备峰值超过资源预算。", error);
+      Fail(AppearanceSceneStatus::BudgetExceeded, niuma::ui::Text(L"形象准备峰值超过资源预算。", L"The appearance preparation peak exceeds the resource budget."), error);
 }
 
 // Exactly the P0 color policy: WIC converts straight top-down BGRA to PBGRA,
@@ -216,12 +217,12 @@ AppearanceSceneStatus ConvertPreparedAppearanceScene(std::unique_ptr<niuma::Appe
   if (error) error->clear();
   if (!output || !pack || !OptionsValid(options) || expected.sourcePath.empty() ||
       expected.id.empty() || !Fingerprint(expected.contentFingerprint))
-    return Fail(AppearanceSceneStatus::Invalid, L"形象资源请求不完整。", error);
+    return Fail(AppearanceSceneStatus::Invalid, niuma::ui::Text(L"形象资源请求不完整。", L"The appearance resource request is incomplete."), error);
   if (pack->sourcePath != expected.sourcePath || pack->id != expected.id ||
       pack->contentFingerprint != expected.contentFingerprint)
-    return Fail(AppearanceSceneStatus::Changed, L"形象资源版本已变化，请重新读取。", error);
+    return Fail(AppearanceSceneStatus::Changed, niuma::ui::Text(L"形象资源版本已变化，请重新读取。", L"The appearance resource version has changed. Read it again."), error);
   if (pack->layers.empty() || pack->layers.size() > niuma::client::core::AnimationPlayer::kMaximumLayers)
-    return Fail(AppearanceSceneStatus::Invalid, L"形象图层不完整。", error);
+    return Fail(AppearanceSceneStatus::Invalid, niuma::ui::Text(L"形象图层不完整。", L"The appearance layers are incomplete."), error);
   try {
     auto scene = std::make_unique<PreparedAppearanceScene>();
     scene->source = expected;
@@ -239,7 +240,7 @@ AppearanceSceneStatus ConvertPreparedAppearanceScene(std::unique_ptr<niuma::Appe
           layer.image.image->GetWidth() != layer.sourcePixelWidth ||
           layer.image.image->GetHeight() != layer.sourcePixelHeight || layer.keyframes.size() > 8)
         return Fail(AppearanceSceneStatus::ImageUnavailable,
-            L"形象未保留完整原始像素，请在后台重新准备。", error);
+            niuma::ui::Text(L"形象未保留完整原始像素，请在后台重新准备。", L"The appearance did not retain the full original pixels; prepare it again in the background."), error);
       const auto inserted = ids.emplace(layer.imageName, ids.size() + 1);
       float maximumX=1, maximumY=1;
       for(const auto& key:layer.keyframes) {
@@ -266,11 +267,11 @@ AppearanceSceneStatus ConvertPreparedAppearanceScene(std::unique_ptr<niuma::Appe
     scene->memory.sourcePreviewBytesAtEntry = BitmapBytes(pack->preview);
     niuma::client::core::AnimationPlayer validation;
     if (!scene->Configure(validation))
-      return Fail(AppearanceSceneStatus::Invalid, L"形象动作结构不完整，未切换形象。", error);
+      return Fail(AppearanceSceneStatus::Invalid, niuma::ui::Text(L"形象动作结构不完整，未切换形象。", L"The animation structure is incomplete; the appearance was not switched."), error);
     Budget budget{options, scene->memory, scene->memory.sourceRgbaBytesAtEntry +
         scene->memory.sourceRasterBytesAtEntry + scene->memory.sourcePreviewBytesAtEntry};
     if (!budget.Reserve())
-      return Fail(AppearanceSceneStatus::BudgetExceeded, L"原始形象资源超过准备预算。", error);
+      return Fail(AppearanceSceneStatus::BudgetExceeded, niuma::ui::Text(L"原始形象资源超过准备预算。", L"The original appearance resources exceed the preparation budget."), error);
     pack->preview = {};
     for (auto& layer : pack->layers) layer.raster = {};
     budget.sources = scene->memory.sourceRgbaBytesAtEntry;
@@ -280,7 +281,7 @@ AppearanceSceneStatus ConvertPreparedAppearanceScene(std::unique_ptr<niuma::Appe
       if (const auto* duplicate = scene->Find(id)) {
         if (duplicate->pixels.width != dimensions.at(layer.imageName).first ||
             duplicate->pixels.height != dimensions.at(layer.imageName).second)
-          return Fail(AppearanceSceneStatus::Invalid, L"相同图层资源尺寸不一致。", error);
+          return Fail(AppearanceSceneStatus::Invalid, niuma::ui::Text(L"相同图层资源尺寸不一致。", L"Resources for the same layer have inconsistent sizes."), error);
         layer.image = {};
         budget.sources -= sourceBytes;
         continue;
@@ -288,12 +289,12 @@ AppearanceSceneStatus ConvertPreparedAppearanceScene(std::unique_ptr<niuma::Appe
       if (scene->memory.residentBytes() > options.residentByteLimit ||
           sourceBytes > options.residentByteLimit - scene->memory.residentBytes() ||
           !budget.Reserve(sourceBytes * 2, sourceBytes))
-        return Fail(AppearanceSceneStatus::BudgetExceeded, L"形象像素转换超过资源预算。", error);
+        return Fail(AppearanceSceneStatus::BudgetExceeded, niuma::ui::Text(L"形象像素转换超过资源预算。", L"The appearance pixel conversion exceeds the resource budget."), error);
       PreparedSceneImage image;
       image.id = id;
       const auto target=dimensions.at(layer.imageName);
       if (!FilterPixels(layer.image, target.first, target.second, image.pixels))
-        return Fail(AppearanceSceneStatus::ImageUnavailable, L"无法准备形象显示像素。", error);
+        return Fail(AppearanceSceneStatus::ImageUnavailable, niuma::ui::Text(L"无法准备形象显示像素。", L"The appearance display pixels could not be prepared."), error);
       scene->memory.uploadPixelBytes += image.pixels.bgraPremultiplied.capacity();
       layer.image = {};
       budget.sources -= sourceBytes;
@@ -309,7 +310,7 @@ AppearanceSceneStatus ConvertPreparedAppearanceScene(std::unique_ptr<niuma::Appe
     *output = std::move(scene);
     return AppearanceSceneStatus::Ready;
   } catch (const std::bad_alloc&) {
-    return Fail(AppearanceSceneStatus::BudgetExceeded, L"内存不足，未能准备形象显示资源。", error);
+    return Fail(AppearanceSceneStatus::BudgetExceeded, niuma::ui::Text(L"内存不足，未能准备形象显示资源。", L"Out of memory; the appearance display resources could not be prepared."), error);
   }
 }
 
@@ -318,7 +319,7 @@ AppearanceSceneStatus PrepareAppearanceScene(const niuma::AppearanceResourceRequ
     std::wstring* error) {
   if (output) output->reset();
   if (!output || !OptionsValid(options))
-    return Fail(AppearanceSceneStatus::Invalid, L"形象资源请求不完整。", error);
+    return Fail(AppearanceSceneStatus::Invalid, niuma::ui::Text(L"形象资源请求不完整。", L"The appearance resource request is incomplete."), error);
   niuma::AppearanceAnimationOptions loadOptions;
   loadOptions.retainSourcePixels = true;
   loadOptions.prepareDisplayRaster = false;
@@ -343,19 +344,19 @@ AppearanceSceneStatus PrepareWoodfishScene(PixelImage body, PixelImage mallet,
   if (error) error->clear();
   if (!output || !OptionsValid(options) || !Fingerprint(contentFingerprint) ||
       !ValidPixels(body, true) || !ValidPixels(mallet, true) || mallet.width <= 108)
-    return Fail(AppearanceSceneStatus::Invalid, L"内置木鱼资源不完整。", error);
+    return Fail(AppearanceSceneStatus::Invalid, niuma::ui::Text(L"内置木鱼资源不完整。", L"The built-in woodfish resources are incomplete."), error);
   try {
     const auto originalMalletWidth=mallet.width;
     const auto originalBytes=body.bgraPremultiplied.capacity()+mallet.bgraPremultiplied.capacity();
     if(originalBytes>options.bridgePeakByteLimit/3)
-      return Fail(AppearanceSceneStatus::BudgetExceeded,L"内置木鱼准备峰值超过当前预算。",error);
+      return Fail(AppearanceSceneStatus::BudgetExceeded,niuma::ui::Text(L"内置木鱼准备峰值超过当前预算。", L"The built-in woodfish preparation peak exceeds the current budget."),error);
     const float density=options.pixelDensity*.88f*2;
     const auto malletWidth=static_cast<UINT>(std::ceil(std::max(
         266*density*originalMalletWidth/(originalMalletWidth-108),
         60*density*originalMalletWidth/std::min(145u,originalMalletWidth))));
     if(!FilterBuiltin(body,static_cast<UINT>(std::ceil(214*density)),static_cast<UINT>(std::ceil(129*density))) ||
         !FilterBuiltin(mallet,malletWidth,static_cast<UINT>(std::ceil(54*density))))
-      return Fail(AppearanceSceneStatus::ImageUnavailable,L"内置木鱼显示图片无法准备。",error);
+      return Fail(AppearanceSceneStatus::ImageUnavailable,niuma::ui::Text(L"内置木鱼显示图片无法准备。", L"The built-in woodfish display image could not be prepared."),error);
     auto scene = std::make_unique<PreparedAppearanceScene>();
     scene->kind = AppearanceSceneKind::Woodfish;
     scene->pixelDensity = options.pixelDensity;
@@ -370,7 +371,7 @@ AppearanceSceneStatus PrepareWoodfishScene(PixelImage body, PixelImage mallet,
     if (scene->memory.residentBytes() > options.residentByteLimit ||
         shadowBytes > options.residentByteLimit - scene->memory.residentBytes() ||
         !budget.Reserve(shadowBytes))
-      return Fail(AppearanceSceneStatus::BudgetExceeded, L"内置木鱼资源超过当前预算。", error);
+      return Fail(AppearanceSceneStatus::BudgetExceeded, niuma::ui::Text(L"内置木鱼资源超过当前预算。", L"The built-in woodfish resources exceed the current budget."), error);
     PreparedSceneImage shadow;
     shadow.id = 1;
     shadow.pixels = Shadow();
@@ -390,7 +391,7 @@ AppearanceSceneStatus PrepareWoodfishScene(PixelImage body, PixelImage mallet,
     *output = std::move(scene);
     return AppearanceSceneStatus::Ready;
   } catch (const std::bad_alloc&) {
-    return Fail(AppearanceSceneStatus::BudgetExceeded, L"内存不足，未能准备内置木鱼。", error);
+    return Fail(AppearanceSceneStatus::BudgetExceeded, niuma::ui::Text(L"内存不足，未能准备内置木鱼。", L"Out of memory; the built-in woodfish could not be prepared."), error);
   }
 }
 }  // namespace niuma::windows::runtime

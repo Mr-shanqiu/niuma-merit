@@ -1,3 +1,4 @@
+#include "ui_text.h"
 #include "appearance_pack.h"
 
 #include "miniz.h"
@@ -639,7 +640,7 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
   JsonValue root;
   JsonParser parser(text);
   if (!parser.Parse(&root)) {
-    SetError(error, L"形象配置格式不正确或含未知字段。请重新下载，或按制作指南重新封装。");
+    SetError(error, niuma::ui::Text(L"形象配置格式不正确或含未知字段。请重新下载，或按制作指南重新封装。", L"The appearance manifest is malformed or contains unknown fields. Download it again, or rebuild it following the authoring guide."));
     return false;
   }
   double schema = 0, canvasWidth = 0, canvasHeight = 0, plusY = 0;
@@ -652,7 +653,7 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
           "name_zh", "name_en", "author", "publisher", "review_id",
           "canvas_width", "canvas_height", "preview", "plus_y", "layers",
           "license"})))) {
-    SetError(error, L"形象配置格式不正确或含未知字段。请重新下载，或按制作指南重新封装。");
+    SetError(error, niuma::ui::Text(L"形象配置格式不正确或含未知字段。请重新下载，或按制作指南重新封装。", L"The appearance manifest is malformed or contains unknown fields. Download it again, or rebuild it following the authoring guide."));
     return false;
   }
   std::string nameZh, nameEn, author, publisher;
@@ -670,19 +671,19 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
       !NumberInRange(Member(root, "canvas_width"), 240, 240, &canvasWidth) ||
       !NumberInRange(Member(root, "canvas_height"), 250, 250, &canvasHeight) ||
       !NumberInRange(Member(root, "plus_y"), 174, 174, &plusY)) {
-    SetError(error, L"形象包基础资料或版本不合规。请重新下载，或按制作指南修正后重新封装。");
+    SetError(error, niuma::ui::Text(L"形象包基础资料或版本不合规。请重新下载，或按制作指南修正后重新封装。", L"The pack's basic metadata or version is invalid. Download it again, or fix it and repack following the authoring guide."));
     return false;
   }
   // Existing official sources use these actual issuer strings.
   if ((pack->id.compare(0, 9, "official.") == 0 ||
        pack->id.compare(0, 9, "zqscreen.") == 0 ||
        pack->id.compare(0, 8, "creator.") == 0) && Member(root, "license") == nullptr) {
-    SetError(error, L"形象包缺少有效授权凭证。请从官网重新下载，不要修改包内文件。");
+    SetError(error, niuma::ui::Text(L"形象包缺少有效授权凭证。请从官网重新下载，不要修改包内文件。", L"The pack is missing a valid license credential. Download it again from the official site and do not modify files in the pack."));
     return false;
   }
   if ((pack->id.compare(0, 9, "official.") == 0 && publisher != "NiuMa Merit") ||
       (pack->id.compare(0, 9, "zqscreen.") == 0 && publisher != "zqscreen")) {
-    SetError(error, L"形象来源与标识不一致。请从官网重新下载，或修正制作时使用的标识。");
+    SetError(error, niuma::ui::Text(L"形象来源与标识不一致。请从官网重新下载，或修正制作时使用的标识。", L"The pack's source does not match its identifier. Download it again from the official site, or fix the identifier used when authoring."));
     return false;
   }
   // Only the platform creator namespace requires the reviewed-delivery format.
@@ -699,7 +700,7 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
         !std::all_of(pack->id.begin() + 41, pack->id.end(), slugCharacter) ||
         pack->reviewId.size() != 32 ||
         !std::all_of(pack->reviewId.begin(), pack->reviewId.end(), lowerHex)) {
-      SetError(error, L"形象标识或审核信息无效。请从官网重新下载原包。");
+      SetError(error, niuma::ui::Text(L"形象标识或审核信息无效。请从官网重新下载原包。", L"The pack identifier or review information is invalid. Download the original pack again from the official site."));
       return false;
     }
   }
@@ -710,7 +711,7 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
   pack->plusY = static_cast<int>(plusY);
   if (pack->nameZh.empty() || pack->nameEn.empty() || pack->author.empty() ||
       pack->publisher.empty()) {
-    SetError(error, L"形象文字编码不正确。请按制作指南使用 UTF-8 编码重新封装。");
+    SetError(error, niuma::ui::Text(L"形象文字编码不正确。请按制作指南使用 UTF-8 编码重新封装。", L"The pack text encoding is not UTF-8. Repack it using UTF-8 as described in the authoring guide."));
     return false;
   }
   if (schema == 2 || (schema == 3 && Member(root, "license") != nullptr)) {
@@ -732,7 +733,7 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
         license->contentHash.size() != 64 ||
         !StringValue(Member(*value, "signature"), 128, &license->signature) ||
         license->signature.size() != 128) {
-      SetError(error, L"形象包授权凭证格式无效。请从官网重新下载，不要修改包内文件。");
+      SetError(error, niuma::ui::Text(L"形象包授权凭证格式无效。请从官网重新下载，不要修改包内文件。", L"The license credential format is invalid. Download it again from the official site and do not modify files in the pack."));
       return false;
     }
     auto safeToken = [](const std::string& value) {
@@ -747,7 +748,7 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
     };
     if (!safeToken(license->downloadId) || !lowerHex(license->contentHash) ||
         !lowerHex(license->signature)) {
-      SetError(error, L"形象包授权凭证含无效字符。请从官网重新下载原包。");
+      SetError(error, niuma::ui::Text(L"形象包授权凭证含无效字符。请从官网重新下载原包。", L"The license credential contains invalid characters. Download the original pack again from the official site."));
       return false;
     }
     license->signedDelivery = true;
@@ -759,14 +760,14 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
   const JsonValue* layers = Member(root, "layers");
   if (layers == nullptr || layers->kind != JsonValue::Kind::Array ||
       layers->array.empty() || layers->array.size() > kMaximumLayers) {
-    SetError(error, L"形象须包含 1 至 6 个图层。请按制作指南调整后重新封装。");
+    SetError(error, niuma::ui::Text(L"形象须包含 1 至 6 个图层。请按制作指南调整后重新封装。", L"An appearance must contain 1 to 6 layers. Adjust it following the authoring guide and repack."));
     return false;
   }
   for (const JsonValue& layerValue : layers->array) {
     if (!(schema == 3
         ? HasExactKeys(layerValue, {"image", "frame", "anchor", "keyframes", "interpolation"})
         : HasExactKeys(layerValue, {"image", "frame", "anchor", "keyframes"}))) {
-      SetError(error, L"形象图层配置不合规。请按制作指南修正后重新封装。");
+      SetError(error, niuma::ui::Text(L"形象图层配置不合规。请按制作指南修正后重新封装。", L"The layer configuration is invalid. Fix it and repack following the authoring guide."));
       return false;
     }
     PackLayer layer;
@@ -774,14 +775,14 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
       std::string interpolation;
       if (!StringValue(Member(layerValue, "interpolation"), 16, &interpolation) ||
           (interpolation != "linear" && interpolation != "smoothstep")) {
-        SetError(error, L"形象动作的插值方式不受支持。请按制作指南修正后重新封装。");
+        SetError(error, niuma::ui::Text(L"形象动作的插值方式不受支持。请按制作指南修正后重新封装。", L"The animation interpolation mode is unsupported. Fix it and repack following the authoring guide."));
         return false;
       }
       layer.smoothInterpolation = interpolation == "smoothstep";
     }
     if (!StringValue(Member(layerValue, "image"), 128, &layer.imageName) ||
         !IsSafeRootPng(layer.imageName)) {
-      SetError(error, L"形象图层文件名不合规。请按制作指南改名并重新封装。");
+      SetError(error, niuma::ui::Text(L"形象图层文件名不合规。请按制作指南改名并重新封装。", L"A layer file name is invalid. Rename it following the authoring guide and repack."));
       return false;
     }
     const JsonValue* frame = Member(layerValue, "frame");
@@ -789,13 +790,13 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
     if (frame == nullptr || frame->kind != JsonValue::Kind::Array ||
         frame->array.size() != 4 || anchor == nullptr ||
         anchor->kind != JsonValue::Kind::Array || anchor->array.size() != 2) {
-      SetError(error, L"形象图层的位置或锚点格式不正确。请按制作指南修正后重新封装。");
+      SetError(error, niuma::ui::Text(L"形象图层的位置或锚点格式不正确。请按制作指南修正后重新封装。", L"A layer position or anchor has an invalid format. Fix it and repack following the authoring guide."));
       return false;
     }
     double values[6] = {};
     for (size_t index = 0; index < 4; ++index) {
       if (!NumberInRange(&frame->array[index], -480, 480, &values[index])) {
-        SetError(error, L"形象图层位置超出范围。请按制作指南调整后重新封装。");
+        SetError(error, niuma::ui::Text(L"形象图层位置超出范围。请按制作指南调整后重新封装。", L"A layer position is out of range. Adjust it following the authoring guide and repack."));
         return false;
       }
     }
@@ -803,7 +804,7 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
         !NumberInRange(&anchor->array[1], 0, 1, &values[5]) ||
         values[2] <= 0 || values[3] <= 0 || values[2] > 480 ||
         values[3] > 480 || (schema != 3 && (values[1] < 0 || values[1] + values[3] > 170))) {
-      SetError(error, L"形象图层超出安全显示区。请缩小或调整图层后重新封装。");
+      SetError(error, niuma::ui::Text(L"形象图层超出安全显示区。请缩小或调整图层后重新封装。", L"A layer extends outside the safe display area. Shrink or adjust the layers and repack."));
       return false;
     }
     layer.x = static_cast<float>(values[0]);
@@ -816,7 +817,7 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
     const JsonValue* keyframes = Member(layerValue, "keyframes");
     if (keyframes == nullptr || keyframes->kind != JsonValue::Kind::Array ||
         keyframes->array.empty() || keyframes->array.size() > kMaximumKeyframes) {
-      SetError(error, L"每个图层须包含 1 至 8 个关键帧。请按制作指南调整后重新封装。");
+      SetError(error, niuma::ui::Text(L"每个图层须包含 1 至 8 个关键帧。请按制作指南调整后重新封装。", L"Each layer must contain 1 to 8 keyframes. Adjust it following the authoring guide and repack."));
       return false;
     }
     float previousT = -1.0f;
@@ -824,7 +825,7 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
       if (!(schema == 3
           ? HasExactKeys(keyframeValue, {"t", "x", "y", "rotation", "scale", "alpha", "scale_y"})
           : HasExactKeys(keyframeValue, {"t", "x", "y", "rotation", "scale", "alpha"}))) {
-        SetError(error, L"形象动作配置不合规。请按制作指南修正后重新封装。");
+        SetError(error, niuma::ui::Text(L"形象动作配置不合规。请按制作指南修正后重新封装。", L"The animation configuration is invalid. Fix it and repack following the authoring guide."));
         return false;
       }
       double key[6] = {};
@@ -835,13 +836,13 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
           !NumberInRange(Member(keyframeValue, "scale"), 0.1, 4, &key[4]) ||
           !NumberInRange(Member(keyframeValue, "alpha"), 0, 1, &key[5]) ||
           key[0] <= previousT) {
-        SetError(error, L"形象动作数值或时间顺序不正确。请按制作指南修正后重新封装。");
+        SetError(error, niuma::ui::Text(L"形象动作数值或时间顺序不正确。请按制作指南修正后重新封装。", L"Animation values or timing order are incorrect. Fix them and repack following the authoring guide."));
         return false;
       }
       PackKeyframe keyframe;
       double scaleY = 1.0;
       if (schema == 3 && !NumberInRange(Member(keyframeValue, "scale_y"), 0.1, 4, &scaleY)) {
-        SetError(error, L"形象纵向缩放数值不正确。请按制作指南修正后重新封装。");
+        SetError(error, niuma::ui::Text(L"形象纵向缩放数值不正确。请按制作指南修正后重新封装。", L"The vertical scale value is incorrect. Fix it and repack following the authoring guide."));
         return false;
       }
       keyframe.scaleY = static_cast<float>(scaleY);
@@ -855,7 +856,7 @@ bool ParseManifest(const std::string& text, AppearancePack* pack,
       previousT = keyframe.t;
     }
     if (layer.keyframes.front().t != 0.0f) {
-      SetError(error, L"形象动作必须从初始时刻开始。请将首个关键帧设为 t=0 后重新封装。");
+      SetError(error, niuma::ui::Text(L"形象动作必须从初始时刻开始。请将首个关键帧设为 t=0 后重新封装。", L"The animation must start at t=0. Set the first keyframe to t=0 and repack."));
       return false;
     }
     pack->layers.push_back(std::move(layer));
@@ -878,28 +879,28 @@ bool LoadAppearancePackFile(const std::wstring& path,
   if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) ||
       (attributes.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY |
                                       FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
-    SetError(error, L"形象文件无法读取或不是普通文件。请重新选择完整形象包，并检查文件读取权限。");
+    SetError(error, niuma::ui::Text(L"形象文件无法读取或不是普通文件。请重新选择完整形象包，并检查文件读取权限。", L"The appearance file cannot be read or is not a regular file. Select the complete pack again and check file read permissions."));
     return false;
   }
   const ULONGLONG size =
       (static_cast<ULONGLONG>(attributes.nFileSizeHigh) << 32) |
       attributes.nFileSizeLow;
   if (size == 0) {
-    SetError(error, L"形象包为空或下载不完整。请重新下载完整文件后再导入。");
+    SetError(error, niuma::ui::Text(L"形象包为空或下载不完整。请重新下载完整文件后再导入。", L"The pack is empty or the download is incomplete. Download the complete file again before importing."));
     return false;
   }
   if (size > kMaximumPackBytes) {
-    SetError(error, L"单个形象包超过 50MB。请按制作指南压缩素材后重新封装。");
+    SetError(error, niuma::ui::Text(L"单个形象包超过 50MB。请按制作指南压缩素材后重新封装。", L"A single pack exceeds 50 MB. Compress the assets following the authoring guide and repack."));
     return false;
   }
   const std::string utf8Path = WideToUtf8(path);
   if (utf8Path.empty()) {
-    SetError(error, L"无法识别所选文件。请重新选择形象包，或从官网重新下载。");
+    SetError(error, niuma::ui::Text(L"无法识别所选文件。请重新选择形象包，或从官网重新下载。", L"The selected file is not recognized. Select an appearance pack again, or download it from the official site."));
     return false;
   }
   mz_zip_archive archive = {};
   if (!mz_zip_reader_init_file(&archive, utf8Path.c_str(), 0)) {
-    SetError(error, L"形象包损坏或压缩格式不正确。请重新下载完整文件后重试。");
+    SetError(error, niuma::ui::Text(L"形象包损坏或压缩格式不正确。请重新下载完整文件后重试。", L"The pack is damaged or the compression format is invalid. Download the complete file again and retry."));
     return false;
   }
   struct ArchiveGuard {
@@ -908,7 +909,7 @@ bool LoadAppearancePackFile(const std::wstring& path,
   } guard{&archive};
   if (archive.m_total_files == 0 || archive.m_total_files > kMaximumFiles ||
       !mz_zip_validate_archive(&archive, 0)) {
-    SetError(error, L"形象文件数量不合规或内容损坏。请重新下载完整包，或按制作指南重新封装。");
+    SetError(error, niuma::ui::Text(L"形象文件数量不合规或内容损坏。请重新下载完整包，或按制作指南重新封装。", L"The number of pack files is invalid or their contents are damaged. Download the complete pack again, or repack following the authoring guide."));
     return false;
   }
   std::set<std::string> archiveNames;
@@ -916,7 +917,7 @@ bool LoadAppearancePackFile(const std::wstring& path,
   for (mz_uint index = 0; index < archive.m_total_files; ++index) {
     mz_zip_archive_file_stat stat = {};
     if (!mz_zip_reader_file_stat(&archive, index, &stat) || stat.m_is_directory) {
-      SetError(error, L"形象包内含文件夹或目录信息损坏。请重新下载，或按制作指南重新封装。");
+      SetError(error, niuma::ui::Text(L"形象包内含文件夹或目录信息损坏。请重新下载，或按制作指南重新封装。", L"The pack contains folders or its directory information is damaged. Download it again, or repack following the authoring guide."));
       return false;
     }
     const std::string name(stat.m_filename);
@@ -926,19 +927,19 @@ bool LoadAppearancePackFile(const std::wstring& path,
         name.find('\\') != std::string::npos ||
         (unixMode & 0170000U) == 0120000U ||
         !archiveNames.insert(name).second) {
-      SetError(error, L"形象文件结构不安全，含重复或不允许的文件。请重新下载，或按制作指南重新封装。");
+      SetError(error, niuma::ui::Text(L"形象文件结构不安全，含重复或不允许的文件。请重新下载，或按制作指南重新封装。", L"The pack structure is unsafe, with duplicate or disallowed files. Download it again, or repack following the authoring guide."));
       return false;
     }
     totalUncompressed += stat.m_uncomp_size;
     if (totalUncompressed > kMaximumPackBytes) {
-      SetError(error, L"形象解压内容超过 50MB。请压缩素材后重新封装。");
+      SetError(error, niuma::ui::Text(L"形象解压内容超过 50MB。请压缩素材后重新封装。", L"The uncompressed pack contents exceed 50 MB. Compress the assets and repack."));
       return false;
     }
   }
   std::vector<unsigned char> manifestBytes;
   if (!ReadArchiveEntry(&archive, "manifest.json", kMaximumManifestBytes,
                         &manifestBytes)) {
-    SetError(error, L"形象配置缺失、损坏或超过 64KB。请重新下载，或按制作指南精简配置后重新封装。");
+    SetError(error, niuma::ui::Text(L"形象配置缺失、损坏或超过 64KB。请重新下载，或按制作指南精简配置后重新封装。", L"The manifest is missing, damaged, or larger than 64 KB. Download it again, or slim down the manifest and repack following the authoring guide."));
     return false;
   }
   auto pack = std::make_unique<AppearancePack>();
@@ -951,14 +952,14 @@ bool LoadAppearancePackFile(const std::wstring& path,
   std::set<std::string> declared = {"manifest.json", previewName};
   for (const PackLayer& layer : pack->layers) declared.insert(layer.imageName);
   if (archiveNames != declared) {
-    SetError(error, L"形象文件不完整或含未声明内容。请重新下载完整包，不要手工修改包内文件。");
+    SetError(error, niuma::ui::Text(L"形象文件不完整或含未声明内容。请重新下载完整包，不要手工修改包内文件。", L"The pack is incomplete or contains undeclared content. Download the complete pack again and do not edit files by hand."));
     return false;
   }
   std::map<std::string, std::vector<unsigned char>> pngFiles;
   for (const std::string& name : declared) {
     if (name == "manifest.json") continue;
     if (!ReadArchiveEntry(&archive, name, kMaximumPngBytes, &pngFiles[name])) {
-      SetError(error, L"形象图片损坏或超过 32MB。请重新下载；自行制作的包请压缩并重新导出 PNG。");
+      SetError(error, niuma::ui::Text(L"形象图片损坏或超过 32MB。请重新下载；自行制作的包请压缩并重新导出 PNG。", L"An appearance image is damaged or exceeds 32 MB. Download it again; for self-made packs, compress and re-export the PNG."));
       return false;
     }
   }
@@ -970,11 +971,11 @@ bool LoadAppearancePackFile(const std::wstring& path,
         (license.perpetual ? "" : std::to_string(license.importBefore) + "\n") + license.downloadId +
         "\n" + license.contentHash;
     if (actualHash.empty() || actualHash != license.contentHash) {
-      SetError(error, L"形象内容与授权凭证不一致。请从官网重新下载原包，不要修改包内文件。");
+      SetError(error, niuma::ui::Text(L"形象内容与授权凭证不一致。请从官网重新下载原包，不要修改包内文件。", L"The pack contents do not match the license credential. Download the original pack from the official site and do not modify its files."));
       return false;
     }
     if (!VerifyLicenseSignature(message, license.signature)) {
-      SetError(error, L"形象包签名校验失败。请从官网重新下载，不要继续使用来源不明的文件。");
+      SetError(error, niuma::ui::Text(L"形象包签名校验失败。请从官网重新下载，不要继续使用来源不明的文件。", L"The pack signature verification failed. Download it again from the official site and stop using files from unknown sources."));
       return false;
     }
   }
@@ -982,14 +983,14 @@ bool LoadAppearancePackFile(const std::wstring& path,
   pack->contentFingerprint = ContentHash(pngFiles);
   pngFiles.erase("manifest.json");
   if (pack->contentFingerprint.empty()) {
-    SetError(error, L"无法校验形象内容。原有形象未改变，请重试。");
+    SetError(error, niuma::ui::Text(L"无法校验形象内容。原有形象未改变，请重试。", L"The appearance contents could not be verified. The previous appearance is unchanged; try again."));
     return false;
   }
   if (expected && (expected->id != pack->id ||
       expected->contentFingerprint.empty() ||
       expected->contentFingerprint != pack->contentFingerprint)) {
     if (status) *status = AppearancePreparationStatus::Changed;
-    SetError(error, L"形象文件在读取后发生变化，未启用旧请求。请重新读取形象列表。");
+    SetError(error, niuma::ui::Text(L"形象文件在读取后发生变化，未启用旧请求。请重新读取形象列表。", L"The pack changed after it was read; the old request was not enabled. Read the appearance list again."));
     return false;
   }
   AppearanceResourceMemory localMemory;
@@ -1003,7 +1004,7 @@ bool LoadAppearancePackFile(const std::wstring& path,
   {
     PackImage preview;
     if (!LoadImage(pngFiles[previewName].data(), pngFiles[previewName].size(), &preview)) {
-      SetError(error, L"形象封面损坏或尺寸不合规。请重新下载；自行制作的包请按指南重新导出 PNG。");
+      SetError(error, niuma::ui::Text(L"形象封面损坏或尺寸不合规。请重新下载；自行制作的包请按指南重新导出 PNG。", L"The cover image is damaged or its size is invalid. Download it again; for self-made packs, re-export the PNG per the guide."));
       return false;
     }
     trackDecode(preview, pngFiles[previewName].size());
@@ -1013,7 +1014,7 @@ bool LoadAppearancePackFile(const std::wstring& path,
   if (mode == PackLoadMode::Thumbnail) {
     auto bitmap = std::make_unique<Gdiplus::Bitmap>(240, 250, PixelFormat32bppARGB);
     if (bitmap->GetLastStatus() != Gdiplus::Ok) {
-      SetError(error, L"无法准备形象缩略图。请稍后重试。");
+      SetError(error, niuma::ui::Text(L"无法准备形象缩略图。请稍后重试。", L"The appearance thumbnail could not be prepared. Try again later."));
       return false;
     }
     thumbnail->image = std::move(bitmap);
@@ -1023,7 +1024,7 @@ bool LoadAppearancePackFile(const std::wstring& path,
         thumbnailGraphics->SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias) != Gdiplus::Ok ||
         thumbnailGraphics->SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic) != Gdiplus::Ok ||
         thumbnailGraphics->SetClip(Gdiplus::RectF(0, 80, 240, 170)) != Gdiplus::Ok) {
-      SetError(error, L"无法准备形象缩略图。请稍后重试。");
+      SetError(error, niuma::ui::Text(L"无法准备形象缩略图。请稍后重试。", L"The appearance thumbnail could not be prepared. Try again later."));
       return false;
     }
   }
@@ -1031,7 +1032,7 @@ bool LoadAppearancePackFile(const std::wstring& path,
   for (PackLayer& layer : pack->layers) {
     const auto& pngBytes = pngFiles[layer.imageName];
     if (!LoadImage(pngBytes.data(), pngBytes.size(), &layer.image)) {
-      SetError(error, L"形象图层图片损坏或尺寸不合规。请重新下载；自行制作的包请按指南重新导出 PNG。");
+      SetError(error, niuma::ui::Text(L"形象图层图片损坏或尺寸不合规。请重新下载；自行制作的包请按指南重新导出 PNG。", L"A layer image is damaged or its size is invalid. Download it again; for self-made packs, re-export the PNG per the guide."));
       return false;
     }
     layer.sourcePixelWidth = layer.image.image->GetWidth();
@@ -1044,7 +1045,7 @@ bool LoadAppearancePackFile(const std::wstring& path,
       if (!PrepareLayerRaster(layer, selectedOptions, memory,
                               mode == PackLoadMode::Legacy)) {
         if (status) *status = AppearancePreparationStatus::BudgetExceeded;
-        SetError(error, L"形象显示资源超过当前内存预算，未启用。原有形象保留，请选择较小形象或调整资源预算。");
+        SetError(error, niuma::ui::Text(L"形象显示资源超过当前内存预算，未启用。原有形象保留，请选择较小形象或调整资源预算。", L"The display resources exceed the current memory budget and were not enabled. The previous appearance is kept; choose a smaller appearance or adjust the budget."));
         return false;
       }
       memory.preparationPeakBytes = std::max(memory.preparationPeakBytes,
@@ -1058,7 +1059,7 @@ bool LoadAppearancePackFile(const std::wstring& path,
       thumbnailPreparationMemory.sourceRgbaBytes = 0;
       if (!PrepareLayerRaster(layer, thumbnailOptions, thumbnailPreparationMemory) ||
           !DrawLayer(*thumbnailGraphics, layer, 0)) {
-        SetError(error, L"形象缩略图未能完整绘制，请重新读取或重新下载形象包。");
+        SetError(error, niuma::ui::Text(L"形象缩略图未能完整绘制，请重新读取或重新下载形象包。", L"The thumbnail could not be fully drawn. Read again, or download the pack again."));
         return false;
       }
       memory.preparationPeakBytes = std::max(memory.preparationPeakBytes,
@@ -1171,7 +1172,7 @@ bool AppearanceCatalog::Reload(const std::wstring& directory,
   if (search == INVALID_HANDLE_VALUE) {
     if (GetLastError() == ERROR_FILE_NOT_FOUND) return true;
     packs_ = std::move(previous);
-    SetError(error, L"无法读取本地形象包目录，保留原有可用列表。");
+    SetError(error, niuma::ui::Text(L"无法读取本地形象包目录，保留原有可用列表。", L"The local appearance pack directory could not be read; the existing list is kept."));
     return false;
   }
   std::wstring unavailable;
@@ -1191,7 +1192,7 @@ bool AppearanceCatalog::Reload(const std::wstring& directory,
   FindClose(search);
   if (enumerationError != ERROR_NO_MORE_FILES) {
     packs_ = std::move(previous);
-    SetError(error, L"本地形象列表读取中断，保留原有可用列表。");
+    SetError(error, niuma::ui::Text(L"本地形象列表读取中断，保留原有可用列表。", L"Reading the local appearance list was interrupted; the existing list is kept."));
     return false;
   }
   std::sort(packs_.begin(), packs_.end(),
@@ -1199,7 +1200,7 @@ bool AppearanceCatalog::Reload(const std::wstring& directory,
               return left->id < right->id;
             });
   if (!unavailable.empty())
-    SetError(error, (L"以下形象损坏或未通过校验，原文件保留，其他正常形象不受影响：" + unavailable).c_str());
+    SetError(error, (niuma::ui::Text(L"以下形象损坏或未通过校验，原文件保留，其他正常形象不受影响：", L"The following appearances are damaged or failed verification; the original files are kept and other valid appearances are unaffected:") + unavailable).c_str());
   return true;
 }
 
@@ -1221,7 +1222,7 @@ bool AppearanceCatalog::Install(const std::wstring& sourcePath,
     if ((destinationAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
         !LoadAppearancePackFile(destination, false, &existing, error, PackLoadMode::Metadata) ||
         existing->publisher != validated->publisher) {
-      SetError(error, L"同名形象来源不一致或原形象无法校验。原形象已保留；请确认来源后重新下载。");
+      SetError(error, niuma::ui::Text(L"同名形象来源不一致或原形象无法校验。原形象已保留；请确认来源后重新下载。", L"A pack with the same name comes from a different source, or the original appearance cannot be verified. The original is kept; confirm the source and download again."));
       return false;
     }
     if (SamePackArchive(sourcePath, destination)) {
@@ -1233,14 +1234,14 @@ bool AppearanceCatalog::Install(const std::wstring& sourcePath,
   } else {
     const DWORD destinationError = GetLastError();
     if (destinationError != ERROR_FILE_NOT_FOUND && destinationError != ERROR_PATH_NOT_FOUND) {
-      SetError(error, L"无法检查原形象，未执行覆盖。请检查文件读取权限后重新导入。");
+      SetError(error, niuma::ui::Text(L"无法检查原形象，未执行覆盖。请检查文件读取权限后重新导入。", L"The original appearance could not be checked, so it was not overwritten. Check file read permissions and import again."));
       return false;
     }
   }
   const std::wstring temporary = destination + L".incoming";
   DeleteFileW(temporary.c_str());
   if (!CopyFileW(sourcePath.c_str(), temporary.c_str(), FALSE)) {
-    SetError(error, L"无法把形象保存到本机。请检查磁盘空间和保存目录的写入权限后重试。");
+    SetError(error, niuma::ui::Text(L"无法把形象保存到本机。请检查磁盘空间和保存目录的写入权限后重试。", L"The appearance could not be saved locally. Check disk space and write permissions for the save directory and retry."));
     return false;
   }
   // CopyFile preserves READONLY from optical/removable source media. Only our
@@ -1253,7 +1254,7 @@ bool AppearanceCatalog::Install(const std::wstring& sourcePath,
            (copiedAttributes & ~FILE_ATTRIBUTE_READONLY) ?
                (copiedAttributes & ~FILE_ATTRIBUTE_READONLY) : FILE_ATTRIBUTE_NORMAL))) {
     DeleteFileW(temporary.c_str());
-    SetError(error, L"无法准备可写的形象副本，原形象保持不变。请检查保存目录权限后重试。");
+    SetError(error, niuma::ui::Text(L"无法准备可写的形象副本，原形象保持不变。请检查保存目录权限后重试。", L"A writable copy of the appearance could not be prepared; the original is unchanged. Check the save directory permissions and retry."));
     return false;
   }
   std::unique_ptr<AppearancePack> copied;
@@ -1263,7 +1264,7 @@ bool AppearanceCatalog::Install(const std::wstring& sourcePath,
                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
     DeleteFileW(temporary.c_str());
     if (error != nullptr && error->empty())
-      SetError(error, L"无法完成形象替换，原形象已保留。请关闭占用文件的程序，检查空间和写入权限后重试。");
+      SetError(error, niuma::ui::Text(L"无法完成形象替换，原形象已保留。请关闭占用文件的程序，检查空间和写入权限后重试。", L"The appearance replacement could not complete; the original is kept. Close any app using the files, then check space and write permissions and retry."));
     return false;
   }
   *installedId = validated->id;
@@ -1277,7 +1278,7 @@ bool AppearanceCatalog::InstallBatch(const std::wstring& sourcePath,
                                      std::vector<std::string>* alreadyInstalledIds) {
   NM_BATCH_TRACE("start", 0);
   if (installedIds == nullptr || !IsAppearanceBatchPath(sourcePath)) {
-    SetError(error, L"请选择 .nmgpacks 批次文件；单个形象请使用 .nmgpack 文件导入。");
+    SetError(error, niuma::ui::Text(L"请选择 .nmgpacks 批次文件；单个形象请使用 .nmgpack 文件导入。", L"Select a .nmgpacks batch file; to import a single appearance, use a .nmgpack file."));
     return false;
   }
   installedIds->clear();
@@ -1285,23 +1286,23 @@ bool AppearanceCatalog::InstallBatch(const std::wstring& sourcePath,
   WIN32_FILE_ATTRIBUTE_DATA attributes = {};
   if (!GetFileAttributesExW(sourcePath.c_str(), GetFileExInfoStandard, &attributes) ||
       (attributes.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
-    SetError(error, L"批次文件无法读取或不是普通文件。请重新选择完整批次，并检查文件读取权限。");
+    SetError(error, niuma::ui::Text(L"批次文件无法读取或不是普通文件。请重新选择完整批次，并检查文件读取权限。", L"The batch file cannot be read or is not a regular file. Select the complete batch again and check file read permissions."));
     return false;
   }
   const ULONGLONG size =
       (static_cast<ULONGLONG>(attributes.nFileSizeHigh) << 32) | attributes.nFileSizeLow;
   if (size == 0) {
-    SetError(error, L"批次文件为空或下载不完整。请重新下载完整批次后再导入。");
+    SetError(error, niuma::ui::Text(L"批次文件为空或下载不完整。请重新下载完整批次后再导入。", L"The batch file is empty or the download is incomplete. Download the complete batch again before importing."));
     return false;
   }
   if (size > kMaximumBatchBytes) {
-    SetError(error, L"批次文件超过 100MB。请减少本批形象数量后重新下载。");
+    SetError(error, niuma::ui::Text(L"批次文件超过 100MB。请减少本批形象数量后重新下载。", L"The batch file exceeds 100 MB. Reduce the number of appearances in this batch and download again."));
     return false;
   }
   const std::string utf8Path = WideToUtf8(sourcePath);
   mz_zip_archive archive = {};
   if (utf8Path.empty() || !mz_zip_reader_init_file(&archive, utf8Path.c_str(), 0)) {
-    SetError(error, L"批次损坏或压缩格式不正确。请重新下载完整批次后重试。");
+    SetError(error, niuma::ui::Text(L"批次损坏或压缩格式不正确。请重新下载完整批次后重试。", L"The batch is damaged or its compression format is invalid. Download the complete batch again and retry."));
     return false;
   }
   struct BatchArchiveGuard {
@@ -1310,11 +1311,11 @@ bool AppearanceCatalog::InstallBatch(const std::wstring& sourcePath,
   } guard{&archive};
   NM_BATCH_TRACE("opened", 0);
   if (archive.m_total_files < 2 || archive.m_total_files > kMaximumBatchCount) {
-    SetError(error, L"一个批次须包含 2 至 10 个独立形象。请重新下载，或按制作指南重新封装。");
+    SetError(error, niuma::ui::Text(L"一个批次须包含 2 至 10 个独立形象。请重新下载，或按制作指南重新封装。", L"A batch must contain 2 to 10 independent appearances. Download it again, or repack following the authoring guide."));
     return false;
   }
   if (!mz_zip_validate_archive(&archive, 0)) {
-    SetError(error, L"批次内容损坏或不完整。请重新下载完整批次后重试。");
+    SetError(error, niuma::ui::Text(L"批次内容损坏或不完整。请重新下载完整批次后重试。", L"The batch contents are damaged or incomplete. Download the complete batch again and retry."));
     return false;
   }
   NM_BATCH_TRACE("validated", archive.m_total_files);
@@ -1325,11 +1326,11 @@ bool AppearanceCatalog::InstallBatch(const std::wstring& sourcePath,
     mz_zip_archive_file_stat stat = {};
     if (!mz_zip_reader_file_stat(&archive, index, &stat) || stat.m_is_directory ||
         stat.m_uncomp_size == 0) {
-      SetError(error, L"批次中的形象损坏、为空或含文件夹。请重新下载完整批次后重试。");
+      SetError(error, niuma::ui::Text(L"批次中的形象损坏、为空或含文件夹。请重新下载完整批次后重试。", L"An appearance in the batch is damaged, empty, or contains folders. Download the complete batch again and retry."));
       return false;
     }
     if (stat.m_uncomp_size > kMaximumPackBytes) {
-      SetError(error, L"批次中的单个形象超过 50MB。请压缩该形象素材后重新封装。");
+      SetError(error, niuma::ui::Text(L"批次中的单个形象超过 50MB。请压缩该形象素材后重新封装。", L"An appearance in the batch exceeds 50 MB. Compress that appearance's assets and repack."));
       return false;
     }
     const std::string name(stat.m_filename);
@@ -1341,19 +1342,19 @@ bool AppearanceCatalog::InstallBatch(const std::wstring& sourcePath,
         !std::all_of(name.begin(), name.end(), [](unsigned char ch) {
           return std::isalnum(ch) || ch == '.' || ch == '_' || ch == '-';
         })) {
-      SetError(error, L"批次文件结构不安全或包含不支持的文件。请重新下载，或按制作指南重新封装。");
+      SetError(error, niuma::ui::Text(L"批次文件结构不安全或包含不支持的文件。请重新下载，或按制作指南重新封装。", L"The batch structure is unsafe or contains unsupported files. Download it again, or repack following the authoring guide."));
       return false;
     }
     std::string lowerName = name;
     std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     if (!seen.insert(lowerName).second) {
-      SetError(error, L"批次包含重复形象文件。请去除重复项后重新下载或重新封装。");
+      SetError(error, niuma::ui::Text(L"批次包含重复形象文件。请去除重复项后重新下载或重新封装。", L"The batch contains duplicate appearance files. Remove the duplicates, then download or repack again."));
       return false;
     }
     totalUncompressed += stat.m_uncomp_size;
     if (totalUncompressed > kMaximumBatchBytes) {
-      SetError(error, L"批次解压内容超过 100MB。请减少本批形象数量后重新下载。");
+      SetError(error, niuma::ui::Text(L"批次解压内容超过 100MB。请减少本批形象数量后重新下载。", L"The uncompressed batch contents exceed 100 MB. Reduce the number of appearances in this batch and download again."));
       return false;
     }
   }
@@ -1362,7 +1363,7 @@ bool AppearanceCatalog::InstallBatch(const std::wstring& sourcePath,
     NM_BATCH_TRACE("extract", index);
     mz_zip_archive_file_stat stat = {};
     if (!mz_zip_reader_file_stat(&archive, index, &stat)) {
-      SetError(error, L"无法读取批次中的形象。请重新下载完整批次后重试。");
+      SetError(error, niuma::ui::Text(L"无法读取批次中的形象。请重新下载完整批次后重试。", L"An appearance in the batch could not be read. Download the complete batch again and retry."));
       return false;
     }
     size_t extractedSize = 0;
@@ -1370,20 +1371,20 @@ bool AppearanceCatalog::InstallBatch(const std::wstring& sourcePath,
     NM_BATCH_TRACE("extracted", index);
     if (bytes == nullptr || extractedSize != stat.m_uncomp_size) {
       if (bytes != nullptr) mz_free(bytes);
-      SetError(error, L"批次中的形象损坏或解压失败。请重新下载完整批次后重试。");
+      SetError(error, niuma::ui::Text(L"批次中的形象损坏或解压失败。请重新下载完整批次后重试。", L"An appearance in the batch is damaged or failed to extract. Download the complete batch again and retry."));
       return false;
     }
     wchar_t temporary[MAX_PATH] = {};
     if (!GetTempFileNameW(directory.c_str(), L"nmb", 0, temporary)) {
       mz_free(bytes);
-      SetError(error, L"无法创建导入临时文件。请检查磁盘空间和临时目录写入权限后重试。");
+      SetError(error, niuma::ui::Text(L"无法创建导入临时文件。请检查磁盘空间和临时目录写入权限后重试。", L"The import temporary file could not be created. Check disk space and temp directory write permissions and retry."));
       return false;
     }
     const std::wstring packTemporary = std::wstring(temporary) + L".nmgpack";
     if (!MoveFileW(temporary, packTemporary.c_str())) {
       DeleteFileW(temporary);
       mz_free(bytes);
-      SetError(error, L"无法准备导入临时文件。请检查磁盘空间和临时目录写入权限后重试。");
+      SetError(error, niuma::ui::Text(L"无法准备导入临时文件。请检查磁盘空间和临时目录写入权限后重试。", L"The import temporary file could not be prepared. Check disk space and temp directory write permissions and retry."));
       return false;
     }
     HANDLE file = CreateFileW(packTemporary.c_str(), GENERIC_WRITE, 0, nullptr,
@@ -1396,7 +1397,7 @@ bool AppearanceCatalog::InstallBatch(const std::wstring& sourcePath,
     mz_free(bytes);
     if (!saved || written != extractedSize) {
       DeleteFileW(packTemporary.c_str());
-      SetError(error, L"无法保存导入临时文件。请检查磁盘空间和写入权限后重试。");
+      SetError(error, niuma::ui::Text(L"无法保存导入临时文件。请检查磁盘空间和写入权限后重试。", L"The import temporary file could not be saved. Check disk space and write permissions and retry."));
       return false;
     }
     std::string installedId;
@@ -1407,9 +1408,9 @@ bool AppearanceCatalog::InstallBatch(const std::wstring& sourcePath,
     DeleteFileW(packTemporary.c_str());
     if (!installed) {
       if (error != nullptr && !installedIds->empty()) {
-        *error = L"已处理 " + std::to_wstring(installedIds->size()) +
-                 L" 个形象；从第 " + std::to_wstring(index + 1) +
-                 L" 个起未完成：" + *error;
+        *error = niuma::ui::Text(L"已处理 ", L"Processed ") + std::to_wstring(installedIds->size()) +
+                 niuma::ui::Text(L" 个形象；从第 ", L" appearance(s); from #") + std::to_wstring(index + 1) +
+                 niuma::ui::Text(L" 个起未完成：", L" not completed onward: ") + *error;
       }
       return false;
     }
@@ -1426,7 +1427,7 @@ bool AppearanceCatalog::Delete(const std::string& id, std::wstring* error) {
   if (pack == nullptr) return true;
   const std::wstring path = pack->sourcePath;
   if (!DeleteFileW(path.c_str())) {
-    SetError(error, L"无法删除所选形象。请关闭占用文件的程序并检查文件写入权限后重试。");
+    SetError(error, niuma::ui::Text(L"无法删除所选形象。请关闭占用文件的程序并检查文件写入权限后重试。", L"The selected appearance could not be deleted. Close programs using the file, check write permissions, and retry."));
     return false;
   }
   packs_.erase(
@@ -1491,7 +1492,7 @@ bool RegisterPackFileAssociations(const std::wstring& executable,
       !writeDefault(L"Software\\Classes\\NiuMaMerit.MessageCatalog", L"NiuMa Merit Message Catalog") ||
       !writeDefault(L"Software\\Classes\\NiuMaMerit.MessageCatalog\\shell\\open\\command", command)) {
     if (key != nullptr) RegCloseKey(key);
-    SetError(error, L"无法关联扩展包文件类型，请重新安装官方客户端。");
+    SetError(error, niuma::ui::Text(L"无法关联扩展包文件类型，请重新安装官方客户端。", L"The pack file type could not be associated. Reinstall the official client."));
     return false;
   }
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
@@ -1572,7 +1573,7 @@ AppearancePreparationStatus PrepareAppearanceAnimation(
   if (error) error->clear();
   if (!output || !memory || !std::isfinite(options.pixelDensity) ||
       options.pixelDensity <= 0 || options.byteLimit == 0) {
-    SetError(error, L"形象显示参数不完整，未启用。请重新读取形象列表。");
+    SetError(error, niuma::ui::Text(L"形象显示参数不完整，未启用。请重新读取形象列表。", L"The appearance display parameters are incomplete and were not enabled. Read the appearance list again."));
     return AppearancePreparationStatus::Invalid;
   }
   auto status = AppearancePreparationStatus::Invalid;
@@ -1581,7 +1582,7 @@ AppearancePreparationStatus PrepareAppearanceAnimation(
         PackLoadMode::Animation, &request, &options, memory, nullptr, &status))
       return AppearancePreparationStatus::Ready;
   } catch (const std::bad_alloc&) {
-    SetError(error, L"内存不足，未能准备形象。原有形象保留，请稍后重试。");
+    SetError(error, niuma::ui::Text(L"内存不足，未能准备形象。原有形象保留，请稍后重试。", L"Out of memory; the appearance could not be prepared. The previous appearance is kept; try again later."));
     return AppearancePreparationStatus::BudgetExceeded;
   }
   return status;
@@ -1604,7 +1605,7 @@ AppearancePreparationStatus PrepareAppearanceThumbnail(
       return AppearancePreparationStatus::Ready;
     }
   } catch (const std::bad_alloc&) {
-    SetError(error, L"内存不足，无法准备缩略图。请稍后重试。");
+    SetError(error, niuma::ui::Text(L"内存不足，无法准备缩略图。请稍后重试。", L"Out of memory; the thumbnail could not be prepared. Try again later."));
     return AppearancePreparationStatus::BudgetExceeded;
   }
   return status;

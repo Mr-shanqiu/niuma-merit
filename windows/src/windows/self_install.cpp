@@ -22,6 +22,8 @@ void Require(bool ok, const wchar_t* message) { if (!ok) throw Failure{message};
 const wchar_t* Text(const wchar_t* zh, const wchar_t* en) {
   return niuma::ui::Text(zh, en);
 }
+// 产品名（标题/对话框）本地化；注册表 DisplayName 与快捷方式文件名保持稳定不本地化。
+const wchar_t* BrandName() { return niuma::ui::Text(L"牛马电子功德", L"NiuMa Merit"); }
 [[noreturn]] void FileFailure(const wchar_t* action, DWORD error) {
   throw Failure{std::wstring(action) + Text(L"（系统错误码：", L" (Windows error: ") +
       std::to_wstring(error) + Text(L"）。原有功德记录和素材未改动。", L"). Existing counts and packs were not changed.")};
@@ -521,7 +523,7 @@ LaunchResult PrepareLaunch(HINSTANCE instance, const wchar_t* version) {
     std::vector<std::wstring> args(raw + 1, raw + count); LocalFree(raw);
     const auto has = [&](const wchar_t* value) { return std::find(args.begin(), args.end(), value) != args.end(); };
     const auto inform = [&](const std::wstring& message, UINT flags = MB_OK | MB_ICONERROR) {
-      return MessageBoxW(nullptr, message.c_str(), L"牛马电子功德", flags);
+      return MessageBoxW(nullptr, message.c_str(), BrandName(), flags);
     };
     if (has(L"--uninstall-worker")) {
       const fs::path folder = fs::path(image).parent_path();
@@ -591,7 +593,7 @@ LaunchResult PrepareLaunch(HINSTANCE instance, const wchar_t* version) {
     }
     Require(!has(L"--autostart"), L"Startup entry points outside the installed directory. Run the downloaded file normally to install.");
     TASKDIALOGCONFIG config{}; config.cbSize = sizeof(config); config.hInstance = instance;
-    config.dwCommonButtons = TDCBF_CANCEL_BUTTON; config.pszWindowTitle = L"牛马电子功德";
+    config.dwCommonButtons = TDCBF_CANCEL_BUTTON; config.pszWindowTitle = BrandName();
     config.pszMainInstruction = Text(L"安装并启动牛马电子功德", L"Install and start NiuMa Merit");
     const auto content = std::wstring(Text(L"安装位置：\n", L"Install location:\n")) + l.directory +
         Text(L"\n\n已有功德记录和素材不会被删除。", L"\n\nExisting counts and packs will be retained.");
@@ -612,10 +614,10 @@ LaunchResult PrepareLaunch(HINSTANCE instance, const wchar_t* version) {
     if (!result.shortcutNotice.empty()) inform(result.shortcutNotice, MB_OK | MB_ICONINFORMATION);
     return {true, 0, {}};
   } catch (const Failure& error) {
-    MessageBoxW(nullptr, error.message.c_str(), L"牛马电子功德", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, error.message.c_str(), BrandName(), MB_OK | MB_ICONERROR);
   } catch (...) {
     MessageBoxW(nullptr, Text(L"安装或启动未完成，原有用户记录已保留。", L"Setup or launch could not complete. Existing user records were retained."),
-        L"牛马电子功德", MB_OK | MB_ICONERROR);
+        BrandName(), MB_OK | MB_ICONERROR);
   }
   return {true, 1, {}};
 }
