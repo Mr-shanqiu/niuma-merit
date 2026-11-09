@@ -17,6 +17,7 @@
 #pragma comment(lib, "dwmapi.lib")
 
 #include "appearance_pack.h"
+#include "curve_view.h"
 #include "render_cache.h"
 #include "runtime/input_service.h"
 #include "runtime/storage_service.h"
@@ -164,6 +165,10 @@ constexpr UINT_PTR kMenuGuide = 7;
 constexpr UINT_PTR kMenuOffwork = 8;
 constexpr UINT_PTR kMenuVisibility = 9;
 constexpr UINT_PTR kMenuAutoHide = 10;
+constexpr UINT_PTR kMenuCurve = 11;
+constexpr UINT_PTR kMenuEncourager = 12;
+constexpr UINT_PTR kMenuMedals = 13;
+constexpr UINT_PTR kMenuAppearanceScale = 14;
 constexpr wchar_t kCountStatusClass[] = L"NiuMaMeritCountStatus";
 constexpr int kStatusText = 4001;
 constexpr int kStatusStart = 4002;
@@ -257,8 +262,7 @@ niuma::client::core::VisibilityState gVisibility;
 bool gVisibilityHidden = false;
 NOTIFYICONDATAW gTray{};
 HWND gLastFullscreenWindow = nullptr;
-void ShowContextMenu(HWND window, POINT screenPoint);
-void RenderLayeredWindow(ULONGLONG now);
+void ShowContextMenu(HWND window, POINT screenPoint);void RenderLayeredWindow(ULONGLONG now);
 void ApplyWindowVisibility();
 void RefreshFullscreenVisibility();
 
@@ -1596,6 +1600,105 @@ void PumpMetrics() {
   gMetrics.Flush(TodayLocalDateKey());
 }
 
+// ---- F4 曲线窗口：数据装配（app 只负责喂数据，绘制在 curve_view.cpp）----
+
+// 取某本地日的曲线桶与覆盖位图；无 0.9.6 采集记录返回 false。
+bool CurveDayForDisplay(const std::string& key, std::vector<std::uint64_t>* buckets,
+                        std::vector<bool>* coverage) {
+  if (!gMetricsReady || !buckets || !coverage) return false;
+  const auto& days = gMetrics.root().curve_days;
+  const auto it = days.find(key);
+  if (it == days.end()) return false;
+  buckets->assign(it->second.day.buckets.begin(), it->second.day.buckets.end());
+  coverage->resize(96);
+  for (int i = 0; i < 96; ++i)
+    (*coverage)[static_cast<std::size_t>(i)] = it->second.day.coverage.Get(i);
+  return true;
+}
+
+std::wstring WideFromUtf8(const std::string& value) {
+  return std::wstring(value.begin(), value.end());
+}
+
+// 装配当前曲线视图快照（mode 决定内容）。today 为当前本地日期。
+niuma::windows::window::CurveViewData BuildCurveData(niuma::windows::window::CurveViewMode mode,
+                                                     const SYSTEMTIME& today) {
+  using niuma::windows::window::CurveViewData;
+  using niuma::windows::window::CurveViewMode;
+  CurveViewData data;
+  data.mode = mode;
+  data.year = today.wYear;
+  data.month = today.wMonth;
+  data.day = today.wDay;
+  const std::wstring todayKeyW = DateKey(today);
+  data.todayKey = std::string(todayKeyW.begin(), todayKeyW.end());
+  data.todayTotal = ReadDailyTotal(todayKeyW);
+  if (mode == CurveViewMode::Day) {
+    std::vector<std::uint64_t> buckets;
+    std::vector<bool> coverage;
+    if (CurveDayForDisplay(data.todayKey, &buckets, &coverage)) {
+      data.dayBuckets = std::move(buckets);
+      data.dayCoverage = std::move(coverage);
+      std::uint64_t coveredSum = 0;
+      for (std::size_t i = 0; i < data.dayCoverage.size(); ++i)
+        if (data.dayCoverage[i]) coveredSum += data.dayBuckets[i];
+      data.dayPartial = data.todayTotal > coveredSum;
+    }
+    return data;
+  }
+  std::vector<std::string> keys;
+  if (mode == CurveViewMode::Week) {
+    keys = niuma::curve::WeekDayKeys(today.wYear, today.wMonth, today.wDay);
+    const wchar_t* zh[] = {L"一", L"二", L"三", L"四", L"五", L"六", L"日"};
+    const wchar_t* en[] = {L"Mon", L"Tue", L"Wed", L"Thu", L"Fri", L"Sat", L"Sun"};
+    for (int i = 0; i < 7; ++i) data.rangeLabels.push_back(
+        std::string(IsChineseUi() ? zh[i] : en[i]));
+  } else {
+    keys = niuma::curve::MonthDayKeys(today.wYear, today.wMonth);
+    for (std::size_t i = 0; i < keys.size(); ++i) data.rangeLabels.push_back(std::to_string(i + 1));
+  }
+  data.rangeKeys = keys;
+  for (const std::string& key : keys) {
+    const std::wstring wide = WideFromUtf8(key);
+    data.rangeValues.push_back(ReadDailyTotal(wide));
+  }
+  return data;
+}
+
+void ShowMeritCurve(HWND owner) {
+  const SYSTEMTIME today = CalendarToday();
+  const auto data = BuildCurveData(niuma::windows::window::CurveViewMode::Day, today);
+  niuma::windows::window::ShowCurveWindow(owner, data);
+}
+
+// 曲线窗口打开时随数据刷新（保留用户当前选择的视图）。
+void RefreshCurveIfOpen() {
+  if (!niuma::windows::window::CurveWindowOpen()) return;
+  const SYSTEMTIME today = CalendarToday();
+  const auto data = BuildCurveData(niuma::windows::window::CurrentCurveMode(), today);
+  niuma::windows::window::RefreshCurveWindow(data);
+}
+
+// 曲线窗口导出按钮 → owner 收到 kCurveExportMessage。
+void ExportCurrentCurve(HWND owner) {
+  const SYSTEMTIME today = CalendarToday();
+  // 需要知道当前窗口的视图模式：重新装配时沿用窗口内部模式（由 agent 提供）。
+  const auto mode = niuma::windows::window::CurrentCurveMode();
+  const auto data = BuildCurveData(mode, today);
+  std::wstring error;
+  const bool chinese = IsChineseUi();
+  const std::wstring name = L"niuma-merit-curve.png";
+  if (!niuma::windows::window::ExportCurvePng(owner, data, name,
+          WindowTitle(), L"NiuMa Merit", chinese, &error)) {
+    if (!error.empty()) {
+      niuma::ui::Message(owner, UiText(L"未能生成分享图，请稍后重试。",
+                                       L"Could not generate the share image. Please try again."),
+          WindowTitle(), MB_OK | MB_ICONWARNING);
+    }
+    return;
+  }
+}
+
 bool LoadPngResource(int resourceId, PngResource& output) {
   HRSRC resource =
       FindResourceW(nullptr, MAKEINTRESOURCEW(resourceId), RT_RCDATA);
@@ -2910,6 +3013,7 @@ void ApplyInputView(const input_runtime::InputServiceSnapshot& snapshot) {
     ArmDataStorageTimer();
     if (!wasRunning || !gState.striking) RenderLayeredWindow(now);
     if (gCalendar.window) InvalidateRect(gCalendar.window, nullptr, FALSE);
+    RefreshCurveIfOpen();
   }
   if (previousDate != gState.currentDay) RequestInputLedger();
 #if defined(NIUMA_RUNTIME_ENTRY_PROBE)
@@ -2972,6 +3076,7 @@ void ConsumeInputSnapshot() {
         PumpDataStorage();
         PumpMetrics();
         if (gCalendar.window) InvalidateRect(gCalendar.window, nullptr, FALSE);
+        RefreshCurveIfOpen();
       } else if (ledger.header.status == input_core::LedgerResultStatus::EpochMismatch ||
                  ledger.header.status == input_core::LedgerResultStatus::Complete) {
         RequestInputLedger();
@@ -5034,6 +5139,7 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
   append(kMenuAutoHide, UiText(L"全屏或最大化时自动隐身", L"Auto-hide in Fullscreen or Maximized"), L"\xE740", gVisibility.autoHideFullscreen);
   append(kMenuAppearance, UiText(L"更换形象", L"Change Appearance"), L"\xE77B");
   append(kMenuCalendar, UiText(L"功德日历…", L"Merit Calendar…"), L"\xE787");
+  append(kMenuCurve, UiText(L"牛马曲线…", L"Merit Curve…"), L"\xE9D2");
   append(kMenuOffwork, UiText(L"下班倒计时…", L"Off-work Countdown…"), L"\xE823", gOffwork.enabled);
   if (IsRuntimeCandidate()) {
     append(kMenuLaunchAtLogin, UiText(L"测试数据 · 自动启动已禁用", L"Test data · Startup disabled"), L"\xE7F4", false, true);
@@ -5092,6 +5198,8 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
     ShowAppearancePicker(window);
   } else if (command == static_cast<int>(kMenuCalendar)) {
     ShowMeritCalendar(window);
+  } else if (command == static_cast<int>(kMenuCurve)) {
+    ShowMeritCurve(window);
   } else if (command == static_cast<int>(kMenuOffwork)) {
     ShowOffworkSettings(window);
   } else if (command == static_cast<int>(kMenuQuit)) {
@@ -5286,6 +5394,10 @@ LRESULT CALLBACK WindowProcedure(
       ConsumeInputSnapshot();
       return 0;
 
+    case niuma::windows::window::kCurveExportMessage:
+      ExportCurrentCurve(window);
+      return 0;
+
     case kAppearanceReadyMessage:
       PumpAppearanceResources();
       if (gDataStorage.closing) ContinueClientClose(window);
@@ -5421,6 +5533,7 @@ LRESULT CALLBACK WindowProcedure(
           RequestInputLedger();
         } else if (EnsureCurrentDay()) RenderLayeredWindow(GetTickCount64());
         if (gCalendar.window != nullptr) InvalidateRect(gCalendar.window, nullptr, FALSE);
+        RefreshCurveIfOpen();
         return 0;
       }
       if (wParam == kAnimationTimer && gVisibility.hidden()) {
