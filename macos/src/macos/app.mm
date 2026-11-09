@@ -789,7 +789,6 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (NSDictionary *)curveDayForDisplay:(NSString *)key;
 - (void)showMeritCurve:(id)sender;
 - (void)calendarModeChanged:(id)sender;
-- (void)exportCurveShareCard:(id)sender;
 - (void)curveModeChanged:(id)sender;
 // F3 勋章
 - (void)loadMedalsState;
@@ -4270,11 +4269,7 @@ static NSString *NMCultivationTitle(int level) {
     segments.accessibilityLabel = UiText(@"曲线视图", @"Curve view");
     self.curveModeControl = segments;
     [curvePage addSubview:segments];
-    NSButton *exportButton = [NSButton buttonWithTitle:UiText(@"导出分享图…", @"Export Share Image…")
-        target:self action:@selector(exportCurveShareCard:)];
-    exportButton.frame = NSMakeRect(552, NSHeight(frame) - 48 - 38, 184, 30);
-    exportButton.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
-    [curvePage addSubview:exportButton];
+    // FB12：删除「导出分享图…」按钮（用户不需要导出分享图；日/周/月那行右侧留空）。
 
     [self.calendarWindow center];
   }
@@ -4316,109 +4311,6 @@ static NSString *NMCultivationTitle(int level) {
   (void)sender;
   self.curveView.mode = self.curveModeControl.selectedSegment;
   [self.curveView refreshToToday];
-}
-
-- (void)exportCurveShareCard:(id)sender {
-  (void)sender;
-  [self ensureCurrentDay];
-  NSDateComponents *comp = [RecordCalendar() components:
-      NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:NSDate.date];
-  const int year = (int)comp.year, month = (int)comp.month, day = (int)comp.day;
-  NSString *todayKey = DateKeyForDate(NSDate.date);
-  NSNumberFormatter *fmt = [NSNumberFormatter new];
-  fmt.numberStyle = NSNumberFormatterDecimalStyle;
-  NSMutableArray<NSNumber *> *points = [NSMutableArray array];
-  NSMutableArray<NSString *> *labels = [NSMutableArray array];
-  unsigned long long total = 0;
-  NSString *subtitle = nil;
-  NSString *rangeLabel = nil;
-  NSString *viewName = nil;
-  if (self.curveModeControl.selectedSegment == 0) {
-    NSDictionary *snapshot = [self curveDayForDisplay:todayKey];
-    NSArray *buckets = snapshot[@"buckets"];
-    niuma::curve::Coverage coverage;
-    const bool haveCoverage = snapshot && niuma::curve::Coverage::FromHex(
-        std::string([snapshot[@"coverage"] UTF8String] ?: ""), &coverage);
-    for (int i = 0; i < 96; ++i) {
-      unsigned long long v = (buckets && (NSUInteger)i < buckets.count)
-          ? [buckets[(NSUInteger)i] unsignedLongLongValue] : 0;
-      if (haveCoverage && !coverage.Get(i)) v = 0;
-      [points addObject:@(v)];
-    }
-    for (int hour = 0; hour <= 24; hour += 6)
-      [labels addObject:[NSString stringWithFormat:@"%02d", hour]];
-    // 让 labels 与 points 等长以便渲染器按索引对齐：用空串占位。
-    NSMutableArray<NSString *> *full = [NSMutableArray array];
-    for (int i = 0; i < 96; ++i) [full addObject:@""];
-    for (int hour = 0; hour <= 24; hour += 6) full[(NSUInteger)(hour * 4)] = [NSString stringWithFormat:@"%02d", hour];
-    labels = full;
-    total = [self.dailyTotals[todayKey] unsignedLongLongValue];
-    subtitle = [NSString stringWithFormat:UiText(@"%@ · 今日 96 桶", @"%@ · Today, 96 buckets"), todayKey];
-    rangeLabel = todayKey;
-    viewName = @"day";
-  } else if (self.curveModeControl.selectedSegment == 1) {
-    std::vector<std::string> keys = niuma::curve::WeekDayKeys(year, month, day);
-    NSArray *weekdays = NMWeekdayLabels();
-    for (int i = 0; i < 7; ++i) {
-      NSString *k = [NSString stringWithUTF8String:keys[(std::size_t)i].c_str()];
-      unsigned long long v = [self.dailyTotals[k] unsignedLongLongValue];
-      [points addObject:@(v)];
-      [labels addObject:weekdays[i]];
-      total = (v > ULLONG_MAX - total) ? ULLONG_MAX : total + v;
-    }
-    subtitle = UiText(@"本周每日功德（周一–周日）", @"Daily merit this week (Mon–Sun)");
-    rangeLabel = [NSString stringWithUTF8String:keys.front().c_str()];
-    viewName = @"week";
-  } else {
-    std::vector<std::string> keys = niuma::curve::MonthDayKeys(year, month);
-    for (std::size_t i = 0; i < keys.size(); ++i) {
-      NSString *k = [NSString stringWithUTF8String:keys[i].c_str()];
-      unsigned long long v = [self.dailyTotals[k] unsignedLongLongValue];
-      [points addObject:@(v)];
-      [labels addObject:[NSString stringWithFormat:@"%lu", (unsigned long)(i + 1)]];
-      total = (v > ULLONG_MAX - total) ? ULLONG_MAX : total + v;
-    }
-    subtitle = [NSString stringWithFormat:UiText(@"%ld 年 %ld 月每日功德", @"Daily merit %ld / %ld"),
-        (long)year, (long)month];
-    rangeLabel = [NSString stringWithFormat:@"%04d-%02d", year, month];
-    viewName = @"month";
-  }
-
-  NMShareCardModel *model = [NMShareCardModel new];
-  model.kind = NMShareCardKindCurve;
-  model.locale = CurrentUiLanguageTag();
-  model.appVersion = kNiuMa096AppVersion;
-  model.generatedOn = todayKey;
-  model.title = UiText(@"牛马电子功德", @"NiuMa Merit");
-  model.subtitle = subtitle;
-  model.meritPeriod = viewName;
-  model.meritValue = total;
-  model.curveView = viewName;
-  model.curveRangeLabel = rangeLabel;
-  model.curveYUnit = UiText(@"功德", @"merit");
-  model.curvePoints = points;
-  model.curveLabels = labels;
-  model.footerProduct = UiText(@"牛马电子功德", @"NiuMa Merit");
-  model.footerWatermark = @"niuma-merit 0.9.6";
-  if (self.encouragerActive) {
-    model.moneyDisplay = self.encouragerShareAmount;
-    model.moneyCurrency = self.encouragerCurrency;
-    model.moneyExponent = niuma::encourager::ExponentForCode(
-        std::string(self.encouragerCurrency.UTF8String ?: "CNY"));
-    model.moneyAmountMinor = 0;
-  }
-  NSData *png = NMRenderShareCardPNG(model, 1000, 1250);
-  if (!png || !NMSaveShareCardPNG(png, self.calendarWindow, @"niuma-merit-curve.png")) {
-    if (!png) {
-      NSAlert *alert = [[NMUiAlert alloc] init];
-      alert.messageText = UiText(@"导出失败", @"Export Failed");
-      alert.informativeText = UiText(@"未能生成分享图，请稍后重试。",
-          @"Could not generate the share image. Please try again.");
-      [alert addButtonWithTitle:UiText(@"好", @"OK")];
-      [alert runModal];
-    }
-  }
-  (void)fmt;
 }
 
 - (void)selectAppearance:(NSButton *)sender {
