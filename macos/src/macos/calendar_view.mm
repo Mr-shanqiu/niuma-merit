@@ -95,14 +95,14 @@
     BOOL future=[key compare:today]==NSOrderedDescending;
     id value=self.controller.dailyTotals[key];
     NSString *valueText=value ? [numbers stringFromNumber:value] : UiText(@"未记录",@"No record");
-    [self drawText:[NSString stringWithFormat:@"%ld",(long)d] rect:NSMakeRect(cell.origin.x+12,cell.origin.y+5,72,20) size:16
+    [self drawText:[NSString stringWithFormat:@"%ld",(long)d] rect:NSMakeRect(cell.origin.x+12,cell.origin.y+4,72,20) size:16
         color:future?[NSColor colorWithWhite:.65 alpha:1]:([key isEqual:today]||d==self.selectedDay?accent:ink) weight:NSFontWeightSemibold];
-    if(!future) [self drawText:valueText rect:NSMakeRect(cell.origin.x+12,cell.origin.y+27,80,16) size:11 color:muted weight:NSFontWeightRegular];
+    if(!future) [self drawText:valueText rect:NSMakeRect(cell.origin.x+12,cell.origin.y+24,80,16) size:11 color:muted weight:NSFontWeightRegular];
     NSDictionary *record=[self.controller offworkRecordForDay:key];
     if(record) {
       long long seconds=[record[@"seconds"] longLongValue];
       NSString *ot=[NSString stringWithFormat:UiText(@"加班%lld时%lld分",@"OT %lldh %lldm"),seconds/3600,(seconds/60)%60];
-      [self drawText:ot rect:NSMakeRect(cell.origin.x+12,cell.origin.y+44,82,15) size:9 color:accent weight:NSFontWeightRegular];
+      [self drawText:ot rect:NSMakeRect(cell.origin.x+12,cell.origin.y+40,82,13) size:9 color:accent weight:NSFontWeightRegular];
     }
     NSButton *button=self.dayButtons[d-1];button.frame=cell;
     button.accessibilityLabel=[NSString stringWithFormat:@"%@, %@, %@",key,valueText,record ? OffworkDurationText([record[@"seconds"] longLongValue]) : UiText(@"加班未记录",@"Overtime not recorded")];
@@ -110,13 +110,15 @@
   }
   for(NSInteger row=0;row<=6;row++) [self lineFrom:NSMakePoint(kCalendarLeft,kCalendarTop+row*kCalendarCellHeight) to:NSMakePoint(696,kCalendarTop+row*kCalendarCellHeight)];
   for(NSInteger c=1;c<7;c++) [self lineFrom:NSMakePoint(kCalendarLeft+c*kCalendarCellWidth,kCalendarTop) to:NSMakePoint(kCalendarLeft+c*kCalendarCellWidth,kCalendarTop+6*kCalendarCellHeight)];
-  NSRect detail=NSMakeRect(24,620,672,86);[[NSColor colorWithCalibratedWhite:.975 alpha:1] setFill];[[NSBezierPath bezierPathWithRoundedRect:detail xRadius:10 yRadius:10] fill];
+  // FB11：底部统计行锚定在视图底部（原写死 y=620 高度 86 超出 676 视图下沿被裁切）。
+  const CGFloat detailY = NSHeight(self.bounds) - 102.0;
+  NSRect detail=NSMakeRect(24,detailY,672,86);[[NSColor colorWithCalibratedWhite:.975 alpha:1] setFill];[[NSBezierPath bezierPathWithRoundedRect:detail xRadius:10 yRadius:10] fill];
   NSString *key=self.selectedKey;id value=self.controller.dailyTotals[key];NSDictionary *record=[self.controller offworkRecordForDay:key];
-  [self drawText:key rect:NSMakeRect(42,638,210,24) size:17 color:ink weight:NSFontWeightSemibold];
-  [self drawText:UiText(@"仅记录操作次数，不记录输入内容",@"Counts only; no input content") rect:NSMakeRect(42,678,280,16) size:10 color:muted weight:NSFontWeightRegular];
-  [self drawText:UiText(@"当日功德",@"Daily merit") rect:NSMakeRect(350,634,120,20) size:11 color:muted weight:NSFontWeightRegular];
-  [self drawText:value?[numbers stringFromNumber:value]:UiText(@"未记录",@"No record") rect:NSMakeRect(350,657,150,30) size:24 color:ink weight:NSFontWeightBold];
-  [self drawText:UiText(@"加班时长",@"Overtime") rect:NSMakeRect(535,634,150,20) size:11 color:muted weight:NSFontWeightRegular];
-  [self drawText:record?OffworkDurationText([record[@"seconds"] longLongValue]):UiText(@"未记录",@"No record") rect:NSMakeRect(535,657,156,30) size:22 color:ink weight:NSFontWeightSemibold];
+  [self drawText:key rect:NSMakeRect(42,detailY+18,210,24) size:17 color:ink weight:NSFontWeightSemibold];
+  [self drawText:UiText(@"仅记录操作次数，不记录输入内容",@"Counts only; no input content") rect:NSMakeRect(42,detailY+56,280,16) size:10 color:muted weight:NSFontWeightRegular];
+  [self drawText:UiText(@"当日功德",@"Daily merit") rect:NSMakeRect(350,detailY+14,120,20) size:11 color:muted weight:NSFontWeightRegular];
+  [self drawText:value?[numbers stringFromNumber:value]:UiText(@"未记录",@"No record") rect:NSMakeRect(350,detailY+37,150,30) size:24 color:ink weight:NSFontWeightBold];
+  [self drawText:UiText(@"加班时长",@"Overtime") rect:NSMakeRect(535,detailY+14,150,20) size:11 color:muted weight:NSFontWeightRegular];
+  [self drawText:record?OffworkDurationText([record[@"seconds"] longLongValue]):UiText(@"未记录",@"No record") rect:NSMakeRect(535,detailY+37,156,30) size:22 color:ink weight:NSFontWeightSemibold];
 }
 @end
