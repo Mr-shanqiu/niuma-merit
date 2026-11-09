@@ -95,13 +95,13 @@ class MetricsFileStore {
   bool Save(Root* root) {
     if (!root) return false;
     EnsureDirectory();
-    std::string text = Serialize(root);
+    std::string text = Serialize(*root);
     if (text.empty()) return false;
     if (text.size() > kMaxFileBytes) {
       // 先逐日丢弃最旧 curve 日（只删桶），再重试一次；仍超限则拒绝本次写入
       // （不写坏旧文件）。
       PruneCurveDaysUntilFits(root, kMaxFileBytes);
-      text = Serialize(root);
+      text = Serialize(*root);
       if (text.size() > kMaxFileBytes) {
         AppendErrorsLog("metrics payload exceeds 1 MiB after pruning; write rejected");
         return false;
@@ -233,7 +233,7 @@ class MetricsFileStore {
   static void PruneCurveDaysUntilFits(Root* root, std::size_t maxBytes) {
     while (root->curve_days.size() > 1) {
       root->curve_days.erase(root->curve_days.begin());
-      if (Serialize(root).size() <= maxBytes) return;
+      if (Serialize(*root).size() <= maxBytes) return;
     }
     root->curve_days.clear();
   }
