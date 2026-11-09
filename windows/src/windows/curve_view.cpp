@@ -5,6 +5,7 @@
 #include <objidl.h>
 #include <propidl.h>
 #include <wincodec.h>
+#include <commdlg.h>
 #include <gdiplus.h>
 
 #include "ui_theme.h"
@@ -140,14 +141,14 @@ void PaintCurve(Gdiplus::Graphics& graphics, const CurveViewData& data, bool chi
       if (!data.dayCoverage[i]) {
         // 未采集：底部一条浅灰底纹，不画 0。
         Gdiplus::SolidBrush shade(uncollected);
-        graphics.FillRectangle(&shade, cellX, plot.GetBottom() - 3, cellW, 3);
+        graphics.FillRectangle(&shade, Gdiplus::RectF(cellX, plot.GetBottom() - 3, cellW, 3));
         continue;
       }
       const std::uint64_t value = data.dayBuckets[i];
       float h = plot.Height * static_cast<float>(value) / static_cast<float>(maxValue);
       if (value > 0 && h < 2) h = 2;
       Gdiplus::SolidBrush bar((i >= 36 && i < 54) ? blue : accent);
-      graphics.FillRectangle(&bar, cellX, plot.GetBottom() - h, cellW, h);
+      graphics.FillRectangle(&bar, Gdiplus::RectF(cellX, plot.GetBottom() - h, cellW, h));
     }
     for (int hour = 0; hour <= 24; hour += 6) {
       const float x = plot.X + plot.Width * hour / 24.0f;
@@ -162,7 +163,7 @@ void PaintCurve(Gdiplus::Graphics& graphics, const CurveViewData& data, bool chi
     // 图例：未采集。
     {
       Gdiplus::SolidBrush shade(uncollected);
-      graphics.FillRectangle(&shade, plot.GetRight() - 150, plot.Y - 16, 14, 6);
+      graphics.FillRectangle(&shade, Gdiplus::RectF(plot.GetRight() - 150, plot.Y - 16, 14, 6));
       DrawText(graphics, chinese ? L"未采集" : L"Not collected",
                Gdiplus::RectF(plot.GetRight() - 130, plot.Y - 21, 120, 16), 11, muted);
     }
@@ -188,7 +189,7 @@ void PaintCurve(Gdiplus::Graphics& graphics, const CurveViewData& data, bool chi
               static_cast<float>(maxValue);
     if (data.rangeValues[i] > 0 && h < 2) h = 2;
     Gdiplus::SolidBrush bar(i == 0 ? blue : accent);
-    graphics.FillRectangle(&bar, cx - barWidth / 2, plot.GetBottom() - h, barWidth, h);
+    graphics.FillRectangle(&bar, Gdiplus::RectF(cx - barWidth / 2, plot.GetBottom() - h, barWidth, h));
     const std::wstring label =
         i < data.rangeLabels.size() ? data.rangeLabels[i] : std::to_wstring(i + 1);
     const float lw = count > 20 ? 20.0f : 40.0f;
@@ -375,10 +376,10 @@ namespace {
 bool SavePngToFile(const std::wstring& path, Gdiplus::Bitmap& bitmap) {
   CLSID pngEncoder{};
   UINT count = 0, size = 0;
-  if (GetImageEncodersSize(&count, &size) != Gdiplus::Ok || size == 0) return false;
+  if (Gdiplus::GetImageEncodersSize(&count, &size) != Gdiplus::Ok || size == 0) return false;
   std::vector<BYTE> buffer(size);
   auto* encoders = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buffer.data());
-  if (GetImageEncoders(count, size, encoders) != Gdiplus::Ok) return false;
+  if (Gdiplus::GetImageEncoders(count, size, encoders) != Gdiplus::Ok) return false;
   bool found = false;
   for (UINT i = 0; i < count; ++i) {
     if (wcscmp(encoders[i].MimeType, L"image/png") == 0) {
@@ -404,7 +405,7 @@ bool ExportCurvePng(HWND owner, const CurveViewData& data, const std::wstring& s
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
     Gdiplus::SolidBrush background(Gdiplus::Color(255, 250, 248, 244));
-    graphics.FillRectangle(&background, 0, 0, imageWidth, imageHeight);
+    graphics.FillRectangle(&background, Gdiplus::RectF(0, 0, static_cast<Gdiplus::REAL>(imageWidth), static_cast<Gdiplus::REAL>(imageHeight)));
     // 页眉
     const Gdiplus::Color ink(255, 29, 29, 31), muted(255, 110, 110, 115);
     DrawText(graphics, chinese ? titleZh : titleEn,
