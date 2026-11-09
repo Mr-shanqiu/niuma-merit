@@ -1,5 +1,6 @@
 #include "input_service.h"
 #include "../../client/core/latest_snapshot.h"
+#include "../../client/core/scroll_tick_counter.h"
 
 #include <algorithm>
 #include <array>
