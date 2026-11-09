@@ -584,9 +584,11 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, strong) NSPopUpButton *encouragerStartMinuteControl;
 @property(nonatomic, strong) NSPopUpButton *encouragerEndHourControl;
 @property(nonatomic, strong) NSPopUpButton *encouragerEndMinuteControl;
-// F4 牛马曲线
-@property(nonatomic, strong) NSWindow *curveWindow;
+// F4 牛马曲线（FB1 起并入功德日历窗口，作为「日曆 / 曲線」分段视图）
 @property(nonatomic, strong) NMCurveView *curveView;
+@property(nonatomic, strong) NSSegmentedControl *calendarModeControl;
+@property(nonatomic, strong) NSView *calendarPageView;  // 日历页容器（含导航按钮）
+@property(nonatomic, strong) NSView *curvePageView;     // 曲线页容器（含日/周/月 + 导出）
 @property(nonatomic, strong) NSSegmentedControl *curveModeControl;
 // F3 勋章墙
 @property(nonatomic, strong) NSWindow *medalWindow;
@@ -779,6 +781,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)pruneCurveDays;
 - (NSDictionary *)curveDayForDisplay:(NSString *)key;
 - (void)showMeritCurve:(id)sender;
+- (void)calendarModeChanged:(id)sender;
 - (void)exportCurveShareCard:(id)sender;
 - (void)curveModeChanged:(id)sender;
 // F3 勋章
@@ -4057,11 +4060,6 @@ static NSString *NMMedalIcon(int tier) {
              action:@selector(showMeritCalendar:)
       keyEquivalent:@""];
   calendar.target = self;
-  NSMenuItem *curveItem = [[NSMenuItem alloc]
-      initWithTitle:UiText(@"牛马曲线…", @"Merit Curve…")
-             action:@selector(showMeritCurve:)
-      keyEquivalent:@""];
-  curveItem.target = self;
   NSMenuItem *offwork = [[NSMenuItem alloc]
       initWithTitle:UiText(@"下班倒计时…", @"Off-work Countdown…")
              action:@selector(showOffworkSettings:) keyEquivalent:@""];
@@ -4094,12 +4092,12 @@ static NSString *NMMedalIcon(int tier) {
       action:@selector(toggleAutoHideFullscreen:) keyEquivalent:@""];
   autoHide.target = self;
   autoHide.state = _visibility.autoHideFullscreen ? NSControlStateValueOn : NSControlStateValueOff;
-  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, curveItem, offwork, encourager, medals, launchAtLogin, about, quit];
+  NSArray<NSMenuItem *> *entries = @[visibility, autoHide, appearance, appearanceSize, calendar, offwork, encourager, medals, launchAtLogin, about, quit];
   for (NSMenuItem *item in entries) [menu addItem:item];
   NSFont *menuFont = [NSFont systemFontOfSize:14];
   menu.font = menuFont;
   if (@available(macOS 11.0, *)) {
-    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"chart.bar", @"clock", @"yensign.circle", @"rosette", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
+    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"clock", @"yensign.circle", @"rosette", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
     for (NSUInteger index = 0; index < entries.count; ++index) {
       NSImage *image = [NSImage imageWithSystemSymbolName:symbols[index] accessibilityDescription:nil];
       image.size = NSMakeSize(16, 16); ((NSMenuItem *)entries[index]).image = image;
@@ -4188,9 +4186,41 @@ static NSString *NMMedalIcon(int tier) {
   (void)sender;
   [self ensureCurrentDay];
   if (!self.calendarWindow) {
-    NSRect frame = NSMakeRect(0, 0, 720, 724);
-    self.calendarView = [[MeritCalendarView alloc] initWithFrame:frame];
+    // FB1：功德日历窗口同时容纳「日曆 / 曲線」两个视图，尺寸取两者较大者，
+    // 切换时窗口位置不变（同一窗口、同一 frame，仅切换可见页）。
+    NSRect frame = NSMakeRect(0, 0, 760, 724);
+    NSView *root = [[NSView alloc] initWithFrame:frame];
+    self.calendarWindow = [[NSWindow alloc] initWithContentRect:frame
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+          backing:NSBackingStoreBuffered defer:NO];
+    self.calendarWindow.title = UiText(@"功德日历", @"Merit Calendar");
+    self.calendarWindow.contentView = root;
+    self.calendarWindow.releasedWhenClosed = NO;
+    if (gIsolatedAcceptance) self.calendarWindow.restorable = NO;
+    NMUiWindow(self.calendarWindow);
+    self.calendarWindow.backgroundColor = NSColor.whiteColor;
+
+    // 顶部分段控件：日曆 / 曲線。
+    NSSegmentedControl *mode = [NSSegmentedControl
+        segmentedControlWithLabels:@[ UiText(@"日历", @"Calendar"), UiText(@"曲线", @"Curve") ]
+                     trackingMode:NSSegmentSwitchTrackingSelectOne
+                           target:self
+                           action:@selector(calendarModeChanged:)];
+    mode.frame = NSMakeRect(24, NSHeight(frame) - 40, 200, 28);
+    mode.selectedSegment = 0;
+    mode.autoresizingMask = NSViewMinYMargin;
+    mode.accessibilityLabel = UiText(@"日历视图切换", @"Calendar view switcher");
+    self.calendarModeControl = mode;
+    [root addSubview:mode];
+
+    // ---- 日历页 ----
+    NSView *calendarPage = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 760, NSHeight(frame) - 48)];
+    calendarPage.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    self.calendarPageView = calendarPage;
+    [root addSubview:calendarPage];
+    self.calendarView = [[MeritCalendarView alloc] initWithFrame:calendarPage.bounds];
     self.calendarView.controller = self;
+    self.calendarView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [self.calendarView showCurrentMonth];
     NSButton *previous = [[NSButton alloc] initWithFrame:NSMakeRect(24, 20, 30, 28)];
     previous.title = @"<"; previous.tag = -1; previous.target = self;
@@ -4206,15 +4236,36 @@ static NSString *NMMedalIcon(int tier) {
     today.frame=NSMakeRect(325,20,100,28); [self.calendarView addSubview:today];
     [self.calendarView addSubview:previous];
     [self.calendarView addSubview:next];
-    self.calendarWindow = [[NSWindow alloc] initWithContentRect:frame
-        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
-          backing:NSBackingStoreBuffered defer:NO];
-    self.calendarWindow.title = UiText(@"功德日历", @"Merit Calendar");
-    self.calendarWindow.contentView = self.calendarView;
-    self.calendarWindow.releasedWhenClosed = NO;
-    if (gIsolatedAcceptance) self.calendarWindow.restorable = NO;
-    NMUiWindow(self.calendarWindow);
-    self.calendarWindow.backgroundColor=NSColor.whiteColor;
+    [calendarPage addSubview:self.calendarView];
+
+    // ---- 曲线页（沿用原独立窗口的曲线视图与控件）----
+    NSView *curvePage = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 760, NSHeight(frame) - 48)];
+    curvePage.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    curvePage.hidden = YES;
+    self.curvePageView = curvePage;
+    [root addSubview:curvePage];
+    self.curveView = [[NMCurveView alloc] initWithFrame:NSMakeRect(0, 0, 760, NSHeight(frame) - 48)];
+    self.curveView.controller = self;
+    self.curveView.mode = 0;
+    self.curveView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    [curvePage addSubview:self.curveView];
+    NSSegmentedControl *segments = [NSSegmentedControl
+        segmentedControlWithLabels:@[ UiText(@"日", @"Day"), UiText(@"周", @"Week"),
+                                      UiText(@"月", @"Month") ]
+                     trackingMode:NSSegmentSwitchTrackingSelectOne
+                           target:self
+                           action:@selector(curveModeChanged:)];
+    segments.frame = NSMakeRect(24, 8, 260, 28);
+    segments.selectedSegment = 0;
+    segments.accessibilityLabel = UiText(@"曲线视图", @"Curve view");
+    self.curveModeControl = segments;
+    [curvePage addSubview:segments];
+    NSButton *exportButton = [NSButton buttonWithTitle:UiText(@"导出分享图…", @"Export Share Image…")
+        target:self action:@selector(exportCurveShareCard:)];
+    exportButton.frame = NSMakeRect(552, 8, 184, 30);
+    exportButton.autoresizingMask = NSViewMinXMargin;
+    [curvePage addSubview:exportButton];
+
     [self.calendarWindow center];
   }
   [self.calendarView reloadMonthRange];
@@ -4224,52 +4275,31 @@ static NSString *NMMedalIcon(int tier) {
   [self.calendarWindow makeKeyAndOrderFront:nil];
 }
 
+- (void)calendarModeChanged:(id)sender {
+  (void)sender;
+  const BOOL curve = self.calendarModeControl.selectedSegment == 1;
+  self.calendarPageView.hidden = curve;
+  self.curvePageView.hidden = !curve;
+  if (curve) {
+    [self ensureCurrentDay];
+    [self.curveView refreshToToday];
+  } else {
+    [self.calendarView setNeedsDisplay:YES];
+  }
+}
+
 - (void)shiftCalendarMonth:(NSButton *)sender {
   [self.calendarView shiftMonth:sender.tag];
 }
 
-// ---- F4 牛马曲线窗口 ----
+// ---- F4 牛马曲线（FB1：并入功德日历窗口的「曲線」页，不再单独开窗）----
 - (void)showMeritCurve:(id)sender {
   (void)sender;
-  [self ensureCurrentDay];
-  if (!self.curveWindow) {
-    NSRect frame = NSMakeRect(0, 0, 760, 470);
-    NSView *container = [[NSView alloc] initWithFrame:frame];
-    self.curveView = [[NMCurveView alloc] initWithFrame:NSMakeRect(0, 0, 760, 430)];
-    self.curveView.controller = self;
-    self.curveView.mode = 0;
-    self.curveView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    [container addSubview:self.curveView];
-    NSSegmentedControl *segments = [NSSegmentedControl
-        segmentedControlWithLabels:@[ UiText(@"日", @"Day"), UiText(@"周", @"Week"),
-                                      UiText(@"月", @"Month") ]
-                     trackingMode:NSSegmentSwitchTrackingSelectOne
-                           target:self
-                           action:@selector(curveModeChanged:)];
-    segments.frame = NSMakeRect(24, 436, 260, 28);
-    segments.selectedSegment = 0;
-    segments.accessibilityLabel = UiText(@"曲线视图", @"Curve view");
-    self.curveModeControl = segments;
-    [container addSubview:segments];
-    NSButton *exportButton = [NSButton buttonWithTitle:UiText(@"导出分享图…", @"Export Share Image…")
-        target:self action:@selector(exportCurveShareCard:)];
-    exportButton.frame = NSMakeRect(552, 436, 184, 30);
-    exportButton.autoresizingMask = NSViewMinXMargin;
-    [container addSubview:exportButton];
-    self.curveWindow = [[NSWindow alloc] initWithContentRect:frame
-        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
-        backing:NSBackingStoreBuffered defer:NO];
-    self.curveWindow.title = UiText(@"牛马曲线", @"Merit Curve");
-    self.curveWindow.contentView = container;
-    self.curveWindow.releasedWhenClosed = NO;
-    self.curveWindow.minSize = NSMakeSize(560, 360);
-    if (gIsolatedAcceptance) self.curveWindow.restorable = NO;
-    NMUiWindow(self.curveWindow);
-    [self.curveWindow center];
+  [self showMeritCalendar:sender];
+  if (self.calendarModeControl.selectedSegment != 1) {
+    self.calendarModeControl.selectedSegment = 1;
+    [self calendarModeChanged:self.calendarModeControl];
   }
-  [self.curveView refreshToToday];
-  [NSApp activateIgnoringOtherApps:YES];
-  [self.curveWindow makeKeyAndOrderFront:nil];
 }
 
 - (void)curveModeChanged:(id)sender {
@@ -4368,7 +4398,7 @@ static NSString *NMMedalIcon(int tier) {
     model.moneyAmountMinor = 0;
   }
   NSData *png = NMRenderShareCardPNG(model, 1000, 1250);
-  if (!png || !NMSaveShareCardPNG(png, self.curveWindow, @"niuma-merit-curve.png")) {
+  if (!png || !NMSaveShareCardPNG(png, self.calendarWindow, @"niuma-merit-curve.png")) {
     if (!png) {
       NSAlert *alert = [[NMUiAlert alloc] init];
       alert.messageText = UiText(@"导出失败", @"Export Failed");
