@@ -45,7 +45,7 @@ static void NMCurveDrawText(NSString *text, NSRect rect, CGFloat size, NSColor *
   else
     title = [NSString stringWithFormat:UiText(@"牛马曲线 · %ld 年 %ld 月", @"Merit Curve · %ld / %ld"),
         (long)year, (long)month];
-  NMCurveDrawText(title, NSMakeRect(28, 20, NSWidth(self.bounds) - 56, 32), 22, ink, NSFontWeightBold);
+  NMCurveDrawText(title, NSMakeRect(28, 20, NSWidth(self.bounds) - 56 - 360, 32), 22, ink, NSFontWeightBold);
 
   const CGFloat left = 64, right = 28, top = 78, bottom = 60;
   NSRect plot = NSMakeRect(left, top, NSWidth(self.bounds) - left - right,
@@ -59,10 +59,11 @@ static void NMCurveDrawText(NSString *text, NSRect rect, CGFloat size, NSColor *
   if (self.mode == 0) {
     NSDictionary *snapshot = [self.controller curveDayForDisplay:todayKey];
     unsigned long long total = [self.controller.dailyTotals[todayKey] unsignedLongLongValue];
+    // FB9：统计数值移到标题行右侧，与「日/周/月」分段控件分离，不再压住 tab。
     NMCurveDrawText(UiText(@"今日总计", @"Today's total"),
-                    NSMakeRect(28, 48, 120, 18), 11, muted, NSFontWeightRegular);
+                    NSMakeRect(NSWidth(self.bounds) - 352, 22, 84, 18), 11, muted, NSFontWeightRegular);
     NMCurveDrawText([numbers stringFromNumber:@(total)],
-                    NSMakeRect(NSWidth(self.bounds) - 260, 44, 232, 28), 22, ink,
+                    NSMakeRect(NSWidth(self.bounds) - 260, 14, 232, 28), 22, ink,
                     NSFontWeightBold);
     if (!snapshot) {
       NMCurveDrawText(UiText(@"今日暂无 0.9.6 采集数据（历史旧日按「未采集」处理）",

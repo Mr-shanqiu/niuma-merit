@@ -4314,7 +4314,7 @@ static NSString *NMMedalIcon(int tier) {
     curvePage.hidden = YES;
     self.curvePageView = curvePage;
     [root addSubview:curvePage];
-    self.curveView = [[NMCurveView alloc] initWithFrame:NSMakeRect(0, 0, 760, NSHeight(frame) - 48)];
+    self.curveView = [[NMCurveView alloc] initWithFrame:NSMakeRect(0, 0, 760, NSHeight(frame) - 48 - 44)];
     self.curveView.controller = self;
     self.curveView.mode = 0;
     self.curveView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
@@ -4325,15 +4325,17 @@ static NSString *NMMedalIcon(int tier) {
                      trackingMode:NSSegmentSwitchTrackingSelectOne
                            target:self
                            action:@selector(curveModeChanged:)];
-    segments.frame = NSMakeRect(24, 8, 260, 28);
+    // FB9：日/周/月分段控件放在独立顶部头条带，曲线视图下移让出空间，避免统计数值压住 tab。
+    segments.frame = NSMakeRect(24, NSHeight(frame) - 48 - 36, 260, 28);
     segments.selectedSegment = 0;
+    segments.autoresizingMask = NSViewMinYMargin;
     segments.accessibilityLabel = UiText(@"曲线视图", @"Curve view");
     self.curveModeControl = segments;
     [curvePage addSubview:segments];
     NSButton *exportButton = [NSButton buttonWithTitle:UiText(@"导出分享图…", @"Export Share Image…")
         target:self action:@selector(exportCurveShareCard:)];
-    exportButton.frame = NSMakeRect(552, 8, 184, 30);
-    exportButton.autoresizingMask = NSViewMinXMargin;
+    exportButton.frame = NSMakeRect(552, NSHeight(frame) - 48 - 38, 184, 30);
+    exportButton.autoresizingMask = NSViewMinXMargin | NSViewMinYMargin;
     [curvePage addSubview:exportButton];
 
     [self.calendarWindow center];
