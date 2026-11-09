@@ -22,6 +22,7 @@ enum class Language {
   TraditionalChinese = 1,
   Japanese = 2,
   English = 3,
+  Korean = 4,
 };
 
 // 当前 UI 语言（进程内只解析一次）。

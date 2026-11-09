@@ -29,6 +29,7 @@ Language LanguageFromTag(const std::wstring& tag) {
   switch (niuma::reminder::LocaleFromLanguageTag(Utf8FromWide(tag).c_str())) {
     case niuma::reminder::Locale::ChineseTraditional: return Language::TraditionalChinese;
     case niuma::reminder::Locale::Japanese: return Language::Japanese;
+    case niuma::reminder::Locale::Korean: return Language::Korean;
     case niuma::reminder::Locale::English: return Language::English;
     case niuma::reminder::Locale::Chinese: break;
   }
@@ -72,6 +73,7 @@ Language ResolveLanguage() {
 struct Entry {
   std::wstring zhHant;
   std::wstring ja;
+  std::wstring ko;
 };
 
 const std::unordered_map<std::wstring, Entry>& LookupTable() {
@@ -80,7 +82,7 @@ const std::unordered_map<std::wstring, Entry>& LookupTable() {
     map.reserve(kNMUiTextEntryCountW);
     for (std::size_t index = 0; index < kNMUiTextEntryCountW; ++index) {
       const NMUiTextEntryW& entry = kNMUiTextEntriesW[index];
-      map.emplace(std::wstring(entry.zhHans), Entry{entry.zhHant, entry.ja});
+      map.emplace(std::wstring(entry.zhHans), Entry{entry.zhHant, entry.ja, entry.ko});
     }
     return map;
   }();
@@ -98,6 +100,7 @@ const char* CurrentLanguageTag() {
   switch (CurrentLanguage()) {
     case Language::TraditionalChinese: return "zh-Hant";
     case Language::Japanese: return "ja";
+    case Language::Korean: return "ko";
     case Language::English: return "en";
     case Language::SimplifiedChinese: break;
   }
@@ -114,13 +117,18 @@ const wchar_t* Text(const wchar_t* zhHans, const wchar_t* english) {
   switch (CurrentLanguage()) {
     case Language::English: return english;
     case Language::TraditionalChinese:
-    case Language::Japanese: {
+    case Language::Japanese:
+    case Language::Korean: {
       const auto& table = LookupTable();
       const auto found = table.find(std::wstring(zhHans));
       if (found == table.end()) return zhHans;
-      return CurrentLanguage() == Language::TraditionalChinese
-                 ? found->second.zhHant.c_str()
-                 : found->second.ja.c_str();
+      switch (CurrentLanguage()) {
+        case Language::TraditionalChinese: return found->second.zhHant.c_str();
+        case Language::Japanese: return found->second.ja.c_str();
+        case Language::Korean: return found->second.ko.c_str();
+        default: break;
+      }
+      return zhHans;
     }
     case Language::SimplifiedChinese: break;
   }

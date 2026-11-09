@@ -43,14 +43,18 @@ UsePreviousLanguage=no
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesesimp"; MessagesFile: "languages\ChineseSimplified.isl"
 Name: "chinesetraditional"; MessagesFile: "languages\ChineseSimplified.isl"
+Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 
 [LangOptions]
 chinesetraditional.LanguageID=$0404
 chinesetraditional.LanguageName=中文
+korean.LanguageID=$0412
+korean.LanguageName=한국어
 
 [CustomMessages]
 chinesesimp.LaunchApp=启动%1
 english.LaunchApp=Launch %1
+korean.LaunchApp=%1 열기
 
 [Files]
 Source: "..\..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion

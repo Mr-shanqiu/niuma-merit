@@ -204,10 +204,12 @@ const wchar_t* WindowTitle() {
 const wchar_t* WeekdayShortLabel(int index) {
   static const wchar_t* zh[] = {L"一", L"二", L"三", L"四", L"五", L"六", L"日"};
   static const wchar_t* ja[] = {L"月", L"火", L"水", L"木", L"金", L"土", L"日"};
+  static const wchar_t* ko[] = {L"월", L"화", L"수", L"목", L"금", L"토", L"일"};
   static const wchar_t* en[] = {L"Mon", L"Tue", L"Wed", L"Thu", L"Fri", L"Sat", L"Sun"};
   if (index < 0 || index > 6) index = 0;
   switch (niuma::ui::CurrentLanguage()) {
     case niuma::ui::Language::Japanese: return ja[index];
+    case niuma::ui::Language::Korean: return ko[index];
     case niuma::ui::Language::English: return en[index];
     default: return zh[index];
   }
@@ -216,10 +218,12 @@ const wchar_t* WeekdayShortLabel(int index) {
 const wchar_t* WeekdayLongLabel(int index) {
   static const wchar_t* zh[] = {L"星期一", L"星期二", L"星期三", L"星期四", L"星期五", L"星期六", L"星期日"};
   static const wchar_t* ja[] = {L"月曜日", L"火曜日", L"水曜日", L"木曜日", L"金曜日", L"土曜日", L"日曜日"};
+  static const wchar_t* ko[] = {L"월요일", L"화요일", L"수요일", L"목요일", L"금요일", L"토요일", L"일요일"};
   static const wchar_t* en[] = {L"Monday", L"Tuesday", L"Wednesday", L"Thursday", L"Friday", L"Saturday", L"Sunday"};
   if (index < 0 || index > 6) index = 0;
   switch (niuma::ui::CurrentLanguage()) {
     case niuma::ui::Language::Japanese: return ja[index];
+    case niuma::ui::Language::Korean: return ko[index];
     case niuma::ui::Language::English: return en[index];
     default: return zh[index];
   }
@@ -4614,6 +4618,8 @@ std::wstring CalendarCompactNumber(std::uint64_t value) {
       suffix = unit==10000 ? L"万" : unit==100000000 ? L"億" : L"兆"; break;
     case niuma::ui::Language::TraditionalChinese:
       suffix = unit==10000 ? L"萬" : unit==100000000 ? L"億" : L"萬億"; break;
+    case niuma::ui::Language::Korean:
+      suffix = unit==10000 ? L"만" : unit==100000000 ? L"억" : L"조"; break;
     case niuma::ui::Language::SimplifiedChinese:
       suffix = unit==10000 ? L"万" : unit==100000000 ? L"亿" : L"万亿"; break;
     default:
@@ -4629,6 +4635,8 @@ std::wstring CalendarOvertimeShort(int seconds) {
       return L"残業 "+(h ? std::to_wstring(h)+L"時間" : L"")+std::to_wstring(m)+L"分";
     case niuma::ui::Language::TraditionalChinese:
       return L"加班 "+(h ? std::to_wstring(h)+L"時" : L"")+std::to_wstring(m)+L"分";
+    case niuma::ui::Language::Korean:
+      return L"연장 "+(h ? std::to_wstring(h)+L"시간 " : L"")+std::to_wstring(m)+L"분";
     case niuma::ui::Language::English:
       return L"OT "+(h ? std::to_wstring(h)+L"h " : L"")+std::to_wstring(m)+L"m";
     default:
@@ -4637,9 +4645,14 @@ std::wstring CalendarOvertimeShort(int seconds) {
 }
 // 日历月份标题：简/繁/日 2026年11月；英 2026 / 11。
 std::wstring CalendarMonthTitle(int year, int month) {
-  if (niuma::ui::CurrentLanguage() == niuma::ui::Language::English)
-    return std::to_wstring(year)+L" / "+std::to_wstring(month);
-  return std::to_wstring(year)+L"年"+std::to_wstring(month)+L"月";
+  switch (niuma::ui::CurrentLanguage()) {
+    case niuma::ui::Language::English:
+      return std::to_wstring(year)+L" / "+std::to_wstring(month);
+    case niuma::ui::Language::Korean:
+      return std::to_wstring(year)+L"년 "+std::to_wstring(month)+L"월";
+    default:
+      return std::to_wstring(year)+L"年"+std::to_wstring(month)+L"月";
+  }
 }
 // 日历选中日详情：简/繁 M月D日，星期X；日 M月D日（月）；英 Monday, y/m/d。
 std::wstring CalendarDateDetail(int year, int month, int day, int weekdayIndex) {
@@ -4651,6 +4664,9 @@ std::wstring CalendarDateDetail(int year, int month, int day, int weekdayIndex) 
       return std::to_wstring(month)+L"月"+std::to_wstring(day)+L"日，"+WeekdayLongLabel(weekdayIndex);
     case niuma::ui::Language::SimplifiedChinese:
       return std::to_wstring(month)+L"月"+std::to_wstring(day)+L"日，"+WeekdayLongLabel(weekdayIndex);
+    case niuma::ui::Language::Korean:
+      return std::to_wstring(month)+L"월 "+std::to_wstring(day)+L"일 ("+
+             std::wstring(WeekdayShortLabel(weekdayIndex))+L")";
     default:
       return std::wstring(WeekdayLongLabel(weekdayIndex))+L", "+std::to_wstring(year)+L"/"+
              std::to_wstring(month)+L"/"+std::to_wstring(day);

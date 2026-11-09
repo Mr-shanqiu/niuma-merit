@@ -11,12 +11,15 @@ ChangesAssociations=yes
 english.StartAtLogin=Start automatically when I sign in
 chinesesimp.StartAtLogin=登录后自动启动
 chinesetraditional.StartAtLogin=登录后自动启动
+korean.StartAtLogin=로그인 시 자동으로 시작
 english.LocalOnly=Runs locally. No internet connection required.
 chinesesimp.LocalOnly=本地运行，无需联网。
 chinesetraditional.LocalOnly=本地运行，无需联网。
+korean.LocalOnly=로컬에서 실행되며 인터넷 연결이 필요 없습니다.
 english.InstallerSize=Installer: %1 MB
 chinesesimp.InstallerSize=安装包：%1 MB
 chinesetraditional.InstallerSize=安装包：%1 MB
+korean.InstallerSize=설치 파일: %1 MB
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "NiuMaMerit"; ValueData: """{app}\niuma-merit.exe""{#StartupArguments} --autostart"; Check: StartAtLoginSelected
