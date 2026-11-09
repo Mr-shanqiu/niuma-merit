@@ -74,33 +74,76 @@
   self.glyphs[glyph]=(__bridge id)rep.CGImage;self.advances[glyph]=@(advance);
 }
 
-// FB2：末位数字变化时做一次轻微上下滚动 + 淡入（Core Animation，无第三方库）。
-// 只对「末位数字」做动效，避免整串数字抖动；滚动幅度约 0.55 个字符高，时长 0.28s。
+// FB7：里程表/老虎机式滚动——每个「变化的数字位」都做纵向滚轮动画：新数字从一侧滚入、
+// 旧数字从另一侧滚出，方向按整体数值增减判定（金额增长时统一向上滚），因此 9→0 进位时
+// 高位数字同步滚动，末位每次变化都在滚动，整体快速连续。仅 rollEnabled 时生效。
 - (void)rollLastDigitIfChangedFrom:(NSString *)oldText to:(NSString *)newText {
   if (!self.rollEnabled || !self.digits.count) return;
   oldText = oldText ?: @"";
   newText = newText ?: @"";
   if (oldText.length == 0 || newText.length == 0) return;
-  unichar oldLast = [oldText characterAtIndex:oldText.length - 1];
-  unichar newLast = [newText characterAtIndex:newText.length - 1];
-  if (oldLast == newLast) return;  // 末位没变（只有进位前的其他位变化）则不动
-  CALayer *digit = self.digits.lastObject;
-  if (!digit) return;
-  const CGFloat h = digit.bounds.size.height > 0 ? digit.bounds.size.height : 40;
-  const CGFloat travel = h * 0.55;
-  // 依据末位数字大小决定方向：变大向上滑入，变小向下滑入，制造"滚动"感。
-  const BOOL up = newLast > oldLast;
-  CAKeyframeAnimation *move = [CAKeyframeAnimation animationWithKeyPath:@"transform.translation.y"];
-  move.values = up ? @[@(travel), @(0)] : @[@(-travel), @(0)];
-  move.keyTimes = @[@0, @1];
-  move.duration = 0.28;
-  move.timingFunction = [CAMediaTimingFunction functionWithControlPoints:0.25f :0.9f :0.35f :1.0f];
-  CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-  fade.values = @[@0.25, @1.0];
-  fade.keyTimes = @[@0, @1];
-  fade.duration = 0.28;
-  [digit addAnimation:move forKey:@"nmRollY"];
-  [digit addAnimation:fade forKey:@"nmRollFade"];
+  // 统一滚动方向：整体数值变大（含 9→0 进位）时向上滚，变小则向下滚。
+  BOOL up = YES;
+  if (newText.length > oldText.length) up = YES;
+  else if (newText.length < oldText.length) up = NO;
+  else up = ([newText compare:oldText] != NSOrderedAscending);
+  const NSUInteger n = MIN(oldText.length, newText.length);
+  const NSTimeInterval duration = 0.15;  // 比旧动画(0.28s)更快，形成连续滚动感
+  CAMediaTimingFunction *curve =
+      [CAMediaTimingFunction functionWithControlPoints:0.30f :0 :0.25f :1];
+  for (NSUInteger k = 0; k < n; ++k) {
+    unichar oc = [oldText characterAtIndex:oldText.length - 1 - k];
+    unichar nc = [newText characterAtIndex:newText.length - 1 - k];
+    if (oc == nc) continue;
+    const BOOL od = (oc >= '0' && oc <= '9');
+    const BOOL nd = (nc >= '0' && nc <= '9');
+    if (!od || !nd) continue;  // 只滚动数字；货币符号/小数点直接就位
+    const NSUInteger idx = newText.length - 1 - k;
+    if (idx >= self.digits.count) continue;
+    CALayer *digit = self.digits[idx];
+    if (!digit) continue;
+    const CGFloat h = digit.bounds.size.height > 0 ? digit.bounds.size.height : 40;
+    const CGFloat travel = h * 0.9;
+    // 旧数字滚出（临时叠层，动画结束后移除）。
+    unichar oldChar = oc;
+    id oldContents = self.glyphs[[NSString stringWithCharacters:&oldChar length:1]];
+    if (oldContents) {
+      CALayer *outgoing = [CALayer layer];
+      outgoing.frame = digit.frame;
+      outgoing.contents = oldContents;
+      outgoing.contentsScale = digit.contentsScale;
+      outgoing.contentsGravity = digit.contentsGravity;
+      outgoing.minificationFilter = digit.minificationFilter;
+      outgoing.magnificationFilter = digit.magnificationFilter;
+      [self addSublayer:outgoing];
+      CAKeyframeAnimation *outMove = [CAKeyframeAnimation animationWithKeyPath:@"transform.translation.y"];
+      outMove.values = up ? @[@0, @(-travel)] : @[@0, @(travel)];
+      outMove.keyTimes = @[@0, @1];
+      outMove.duration = duration;
+      outMove.timingFunction = curve;
+      CAKeyframeAnimation *outFade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+      outFade.values = @[@1.0, @0.0];
+      outFade.keyTimes = @[@0, @1];
+      outFade.duration = duration;
+      [CATransaction begin];
+      [CATransaction setCompletionBlock:^{ [outgoing removeFromSuperlayer]; }];
+      [outgoing addAnimation:outMove forKey:@"nmOutY"];
+      [outgoing addAnimation:outFade forKey:@"nmOutFade"];
+      [CATransaction commit];
+    }
+    // 新数字滚入。
+    CAKeyframeAnimation *inMove = [CAKeyframeAnimation animationWithKeyPath:@"transform.translation.y"];
+    inMove.values = up ? @[@(travel), @(0)] : @[@(-travel), @(0)];
+    inMove.keyTimes = @[@0, @1];
+    inMove.duration = duration;
+    inMove.timingFunction = curve;
+    CAKeyframeAnimation *inFade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+    inFade.values = @[@0.35, @1.0];
+    inFade.keyTimes = @[@0, @1];
+    inFade.duration = duration;
+    [digit addAnimation:inMove forKey:@"nmRollY"];
+    [digit addAnimation:inFade forKey:@"nmRollFade"];
+  }
 }
 @end
 
