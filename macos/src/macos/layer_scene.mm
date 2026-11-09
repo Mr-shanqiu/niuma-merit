@@ -13,7 +13,9 @@
 @property(nonatomic) CGFloat atlasSize;
 @property(nonatomic) CGFloat atlasScale;
 @property(nonatomic, strong) NSColor *atlasColor;
+@property(nonatomic) BOOL rollEnabled;  // FB2：数字变化时末位做轻微上下滚动
 - (BOOL)updateText:(NSString *)text size:(CGFloat)size color:(NSColor *)color;
+- (void)rollLastDigitIfChangedFrom:(NSString *)oldText to:(NSString *)newText;
 @end
 @implementation NMNumberLayer
 - (BOOL)updateText:(NSString *)text size:(CGFloat)size color:(NSColor *)color {
@@ -59,6 +61,35 @@
   }
   self.text=[text copy];return YES;
 }
+
+// FB2：末位数字变化时做一次轻微上下滚动 + 淡入（Core Animation，无第三方库）。
+// 只对「末位数字」做动效，避免整串数字抖动；滚动幅度约 0.55 个字符高，时长 0.28s。
+- (void)rollLastDigitIfChangedFrom:(NSString *)oldText to:(NSString *)newText {
+  if (!self.rollEnabled || !self.digits.count) return;
+  oldText = oldText ?: @"";
+  newText = newText ?: @"";
+  if (oldText.length == 0 || newText.length == 0) return;
+  unichar oldLast = [oldText characterAtIndex:oldText.length - 1];
+  unichar newLast = [newText characterAtIndex:newText.length - 1];
+  if (oldLast == newLast) return;  // 末位没变（只有进位前的其他位变化）则不动
+  CALayer *digit = self.digits.lastObject;
+  if (!digit) return;
+  const CGFloat h = digit.bounds.size.height > 0 ? digit.bounds.size.height : 40;
+  const CGFloat travel = h * 0.55;
+  // 依据末位数字大小决定方向：变大向上滑入，变小向下滑入，制造"滚动"感。
+  const BOOL up = newLast > oldLast;
+  CAKeyframeAnimation *move = [CAKeyframeAnimation animationWithKeyPath:@"transform.translation.y"];
+  move.values = up ? @[@(travel), @(0)] : @[@(-travel), @(0)];
+  move.keyTimes = @[@0, @1];
+  move.duration = 0.28;
+  move.timingFunction = [CAMediaTimingFunction functionWithControlPoints:0.25f :0.9f :0.35f :1.0f];
+  CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+  fade.values = @[@0.25, @1.0];
+  fade.keyTimes = @[@0, @1];
+  fade.duration = 0.28;
+  [digit addAnimation:move forKey:@"nmRollY"];
+  [digit addAnimation:fade forKey:@"nmRollFade"];
+}
 @end
 
 // A scene owns only the current picture set. Cached pixels are submitted once;
@@ -71,7 +102,7 @@
 @property(nonatomic, strong) CATextLayer *offworkLabel;
 @property(nonatomic, strong) NMNumberLayer *offworkDuration;
 @property(nonatomic, strong) CATextLayer *encouragerLabel;
-@property(nonatomic, strong) CATextLayer *encouragerAmount;
+@property(nonatomic, strong) NMNumberLayer *encouragerAmount;
 @property(nonatomic, strong) CALayer *encouragerBarBack;
 @property(nonatomic, strong) CALayer *encouragerBarFill;
 @property(nonatomic) double encouragerProgress;
@@ -164,7 +195,9 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     _offworkLabel = NMSceneText(CGRectMake(0,55,240,28),24,NSColor.orangeColor);
     _offworkDuration = [NMNumberLayer layer];_offworkDuration.frame=CGRectMake(0,14,240,35);
     _encouragerLabel = NMSceneText(CGRectMake(0,0,240,22),15,NSColor.orangeColor);
-    _encouragerAmount = NMSceneText(CGRectMake(0,0,240,30),26,NSColor.orangeColor);
+    _encouragerAmount = [NMNumberLayer layer];
+    _encouragerAmount.frame = CGRectMake(0,0,240,30);
+    _encouragerAmount.rollEnabled = YES;  // FB2 数字跳动动效
     _encouragerBarBack = [CALayer layer];
     _encouragerBarBack.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:.18].CGColor;
     _encouragerBarBack.cornerRadius = 4;
@@ -278,8 +311,13 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
   NMNoImplicit(^{
     NSString *oldLabel=[self.encouragerLabel.string isKindOfClass:NSAttributedString.class] ? [self.encouragerLabel.string string] : self.encouragerLabel.string;
     if(![oldLabel isEqual:label ?: @""]) { NMSetSceneText(self.encouragerLabel,label,15,color);self.textUpdates++; }
-    NSString *oldAmount=[self.encouragerAmount.string isKindOfClass:NSAttributedString.class] ? [self.encouragerAmount.string string] : self.encouragerAmount.string;
-    if(![oldAmount isEqual:amount ?: @""]) { NMSetSceneText(self.encouragerAmount,amount,26,color);self.textUpdates++; }
+    NSString *oldAmount = self.encouragerAmount.text ?: @"";
+    if(![oldAmount isEqual:amount ?: @""]) {
+      [self.encouragerAmount updateText:(amount ?: @"") size:26 color:color];
+      self.textUpdates++;
+      // FB2：金额变化时末位轻微滚动 + 淡入。
+      [self.encouragerAmount rollLastDigitIfChangedFrom:oldAmount to:amount ?: @""];
+    }
     [self applyEncouragerBar];
   });
 }

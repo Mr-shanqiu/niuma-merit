@@ -574,6 +574,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic) BOOL encouragerActive;  // enabled && wage>0 && 合法时段
 @property(nonatomic, copy) NSString *encouragerDisplayLabel;
 @property(nonatomic, copy) NSString *encouragerDisplayAmount;
+@property(nonatomic, copy) NSString *encouragerShareAmount;  // 契约 §9 amount_display（分享卡用）
 @property(nonatomic) double encouragerProgress;
 @property(nonatomic, strong) NSWindow *encouragerSettingsWindow;
 @property(nonatomic, strong) NSButton *encouragerEnableControl;
@@ -1631,7 +1632,16 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   NSString *code = self.encouragerCurrency.length ? self.encouragerCurrency : @"CNY";
   int exponent = niuma::encourager::ExponentForCode(std::string(code.UTF8String ?: "CNY"));
   std::string symbol = niuma::encourager::SymbolForCode(std::string(code.UTF8String ?: "CNY"));
+  // FB2（主控修正版）：金额一律以「元」为单位、保留 5 位小数（¥0.00002 / NT$0.00003 /
+  // $0.00004；JPY 也保留 5 位，仅展示、不影响结算）。换算到 1e-5 元刻度求值，末位每秒跳动。
+  const std::uint64_t wageTick =
+      niuma::encourager::WageMinorToTick(self.encouragerDailyWageMinor, exponent);
+  const std::uint64_t earnedTick =
+      niuma::encourager::EarnedTick(wageTick, window, secondOfDay);
   self.encouragerDisplayAmount = [NSString stringWithUTF8String:
+      niuma::encourager::FormatTickAmount(earnedTick, symbol).c_str()];
+  // 分享卡仍按契约 §9 的 amount_display（exponent 位小数）写，不受 5 位展示影响。
+  self.encouragerShareAmount = [NSString stringWithUTF8String:
       niuma::encourager::FormatAmountMinor(status.earned_minor, exponent, symbol).c_str()];
   self.encouragerDisplayLabel = UiText(@"今日已赚", @"Earned today");
   self.encouragerProgress = status.progress;
@@ -2366,7 +2376,7 @@ static NSString *NMMedalIcon(int tier) {
     }
   }
   if (self.encouragerActive) {
-    model.moneyDisplay = self.encouragerDisplayAmount;
+    model.moneyDisplay = self.encouragerShareAmount;
     model.moneyCurrency = self.encouragerCurrency;
     model.moneyExponent = niuma::encourager::ExponentForCode(
         std::string(self.encouragerCurrency.UTF8String ?: "CNY"));
@@ -4391,7 +4401,7 @@ static NSString *NMMedalIcon(int tier) {
   model.footerProduct = UiText(@"牛马电子功德", @"NiuMa Merit");
   model.footerWatermark = @"niuma-merit 0.9.6";
   if (self.encouragerActive) {
-    model.moneyDisplay = self.encouragerDisplayAmount;
+    model.moneyDisplay = self.encouragerShareAmount;
     model.moneyCurrency = self.encouragerCurrency;
     model.moneyExponent = niuma::encourager::ExponentForCode(
         std::string(self.encouragerCurrency.UTF8String ?: "CNY"));

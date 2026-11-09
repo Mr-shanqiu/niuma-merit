@@ -151,5 +151,66 @@ inline std::string FormatAmountMinor(std::uint64_t amount_minor, int exponent,
   return out;
 }
 
+// FB2 · 鼓励器「数字跳动」显示（主控 2026-11-10 修正版）。
+//
+// 要求：金额一律以「元」为单位、小数点后保留 **5 位小数**（如 ¥0.00002、
+// NT$0.00003、$0.00004），币种符号照旧（CN¥/NT$/JP¥/US$），JPY 也保留 5 位小数
+// （仅为展示效果，不影响结算/契约的最小单位与 exponent）。目的：日薪 $0.80 时
+// 每秒增量约 0.0000247 元，5 位小数下末位每秒都在跳，形成「数字不停变动」。
+//
+// 实现：把「今日已赚」换算到 1e-5 元（TickUnitsPerYuan=100000）的整数刻度上，
+// 用 128 位中间量求值，再按 5 位小数格式化。存储/契约最小单位与 exponent 不变；
+// 分享卡仍写契约规定的 amount_display（见 share_card / 调用方）。
+constexpr std::uint64_t kTickUnitsPerYuan = 100000ULL;  // 5 位小数
+
+// 把「日薪（最小货币单位）」换算成「元 × 1e5」整数刻度。
+// amount_minor / 10^exponent = 元；再 × 1e5 得 tick。
+// exponent<=5 时精确（先乘后除）；exponent>5 时先除后乘（极少见，按截断）。
+inline std::uint64_t WageMinorToTick(std::uint64_t daily_wage_minor, int exponent) {
+  if (exponent < 0) exponent = 0;
+  if (exponent > 6) exponent = 6;
+  std::uint64_t pow10 = 1;
+  for (int i = 0; i < exponent; ++i) pow10 *= 10;
+  if (exponent <= 5) {
+    return daily_wage_minor * kTickUnitsPerYuan / pow10;
+  }
+  return (daily_wage_minor / pow10) * kTickUnitsPerYuan;
+}
+
+// 在「元 × 1e5」刻度上求「今日已赚」，语义与 EarnedMinor 一致（到止点等于日薪）。
+inline std::uint64_t EarnedTick(std::uint64_t daily_wage_tick, const Window& window,
+                                int second_of_day) {
+  if (daily_wage_tick == 0 || !window.Valid()) return 0;
+  const int total = window.TotalSeconds();
+  if (total <= 0) return 0;
+  const int elapsed = std::clamp(second_of_day - window.StartSecond(), 0, total);
+  const unsigned __int128 scaled =
+      static_cast<unsigned __int128>(daily_wage_tick) *
+      static_cast<unsigned __int128>(elapsed);
+  return static_cast<std::uint64_t>(scaled / static_cast<unsigned __int128>(total));
+}
+
+// 把「元 × 1e5」整数刻度格式化为「符号 + 千分位整数 + '.' + 5 位小数」。
+// 例：2 -> "CN¥0.00002"；3 -> "NT$0.00003"；4 -> "US$0.00004"；12000000 -> "CN¥120.00000"。
+inline std::string FormatTickAmount(std::uint64_t tick, const std::string& symbol) {
+  const std::uint64_t whole = tick / kTickUnitsPerYuan;
+  const std::uint64_t frac = tick % kTickUnitsPerYuan;
+  std::string digits = std::to_string(whole);
+  std::string grouped;
+  int count = 0;
+  for (int i = static_cast<int>(digits.size()) - 1; i >= 0; --i) {
+    grouped.push_back(digits[static_cast<std::size_t>(i)]);
+    if (++count % 3 == 0 && i > 0) grouped.push_back(',');
+  }
+  std::reverse(grouped.begin(), grouped.end());
+  std::string fracStr = std::to_string(frac);
+  while (fracStr.size() < 5) fracStr.insert(fracStr.begin(), '0');
+  std::string out = symbol;
+  out += grouped;
+  out.push_back('.');
+  out += fracStr;
+  return out;
+}
+
 }  // namespace encourager
 }  // namespace niuma

@@ -85,6 +85,51 @@ int main() {
   CHECK(FormatAmountMinor(12346, 0, "JP¥") == "JP¥12,346");
   CHECK(FormatAmountMinor(100000000, 2, "NT$") == "NT$1,000,000.00");
 
+  // --- FB2（主控修正版）：元 + 5 位小数展示 ---
+  // FormatTickAmount：符号 + 千分位整数 + '.' + 5 位小数。
+  CHECK(FormatTickAmount(2, "CN¥") == "CN¥0.00002");
+  CHECK(FormatTickAmount(3, "NT$") == "NT$0.00003");
+  CHECK(FormatTickAmount(4, "US$") == "US$0.00004");
+  CHECK(FormatTickAmount(12000000, "CN¥") == "CN¥120.00000");
+  CHECK(FormatTickAmount(0, "JP¥") == "JP¥0.00000");
+  CHECK(FormatTickAmount(123456789, "JP¥") == "JP¥1,234.56789");
+  // WageMinorToTick：日薪换算到「元 × 1e5」刻度。
+  // CNY 200.00 元 = 20000 分 -> 200.00 元 -> 20000000 tick。
+  CHECK(WageMinorToTick(20000, 2) == 20000000ULL);
+  // USD 0.80 元 = 80 分 -> 80000 tick。
+  CHECK(WageMinorToTick(80, 2) == 80000ULL);
+  // JPY 12000 日元 (exponent 0) -> 12000 元 -> 1200000000 tick。
+  CHECK(WageMinorToTick(12000, 0) == 1200000000ULL);
+  // EarnedTick：到止点等于日薪（tick 刻度）。
+  {
+    Window w9;  // 09:00-18:00
+    CHECK(EarnedTick(WageMinorToTick(20000, 2), w9, 18 * 3600) == 20000000ULL);
+    CHECK(EarnedTick(WageMinorToTick(20000, 2), w9, 9 * 3600) == 0ULL);
+  }
+  // 每秒可见性（关键）：日薪 $0.80 / 9h，5 位小数下末位每秒都在跳。
+  // 日薪 0.80 元 = 80000 tick；每秒增量 ≈ 80000/32400 ≈ 2.47 tick，>=1 tick/秒。
+  {
+    Window w9;
+    const std::uint64_t wageTick = WageMinorToTick(80, 2);
+    std::uint64_t prev = EarnedTick(wageTick, w9, 10 * 3600);
+    for (int s = 1; s <= 60; ++s) {
+      std::uint64_t v = EarnedTick(wageTick, w9, 10 * 3600 + s);
+      CHECK(v > prev);  // 每秒严格递增（末位每秒变化）
+      prev = v;
+    }
+  }
+  // JPY 也每秒递增（5 位小数展示，仅展示不影响结算）。
+  {
+    Window w9;
+    const std::uint64_t wageTick = WageMinorToTick(12000, 0);  // 12000 日元/天
+    std::uint64_t prev = EarnedTick(wageTick, w9, 10 * 3600);
+    for (int s = 1; s <= 60; ++s) {
+      std::uint64_t v = EarnedTick(wageTick, w9, 10 * 3600 + s);
+      CHECK(v > prev);
+      prev = v;
+    }
+  }
+
   if (g_fail == 0) std::printf("work_encourager_test: OK\n");
   else std::printf("work_encourager_test: %d FAILURES\n", g_fail);
   return g_fail == 0 ? 0 : 1;
