@@ -1,5 +1,6 @@
 #import <QuartzCore/QuartzCore.h>
 #include <algorithm>
+#include <cmath>
 
 // Reuse a small glyph atlas like a clock: changing a number replaces only
 // affected digit contents. No typesetting or bitmap drawing on each keypress.
@@ -147,6 +148,147 @@
 }
 @end
 
+// FB7（重做）· 真·里程表/水表式连续滚动金额。
+//
+// 逐帧驱动（60fps NSTimer + 真实墙钟流逝时间），按「每秒金额」连续计算当前精确刻度
+// （1e-5 元整数刻度 = double），每一位数字渲染成竖向数字带（0–9 循环），用裁剪只露一位；
+// 低位连续移动 → 末位一直在转；某位 9→0 时高位自然跟着转（进位）；位数变长时平滑扩位。
+// 降级：系统「减少动态」开启时直接显示静态数值，不滚动。分享卡不受影响（另走 §9 格式化）。
+@interface NMOdometerLayer : CALayer
+@property(nonatomic, copy) NSString *symbol;
+@property(nonatomic, strong) NSColor *numberColor;
+@property(nonatomic) CGFloat fontSize;
+@property(nonatomic) BOOL active;
+@property(nonatomic) double wageTick;     // 「元 × 1e5」整数刻度/天（实值）
+@property(nonatomic) int startSecond;     // 上班起（当日秒）
+@property(nonatomic) int totalSeconds;    // 上学总秒
+@property(nonatomic, strong) NSTimer *timer;
+- (void)configureActive:(BOOL)active
+               wageTick:(double)wageTick
+            startSecond:(int)startSecond
+           totalSeconds:(int)totalSeconds
+                 symbol:(NSString *)symbol;
+- (void)stop;
+@end
+
+@implementation NMOdometerLayer
+- (instancetype)init {
+  if ((self = [super init])) {
+    _fontSize = 26.0;
+    _numberColor = [NSColor colorWithCalibratedRed:.78 green:.39 blue:.12 alpha:1];
+    self.masksToBounds = NO;
+  }
+  return self;
+}
+- (void)dealloc { [_timer invalidate]; }
+- (BOOL)reduceMotion {
+  if (@available(macOS 10.12, *)) return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  return NO;
+}
+- (void)stop {
+  [self.timer invalidate];
+  self.timer = nil;
+}
+- (void)configureActive:(BOOL)active wageTick:(double)wageTick startSecond:(int)startSecond
+           totalSeconds:(int)totalSeconds symbol:(NSString *)symbol {
+  self.active = active;
+  self.wageTick = wageTick;
+  self.startSecond = startSecond;
+  self.totalSeconds = totalSeconds;
+  self.symbol = symbol ?: @"";
+  [self stop];
+  if (active) {
+    const NSTimeInterval interval = [self reduceMotion] ? 1.0 : (1.0 / 60.0);
+    self.timer = [NSTimer timerWithTimeInterval:interval target:self
+        selector:@selector(frameTick:) userInfo:nil repeats:YES];
+    [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
+    [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSModalPanelRunLoopMode];
+  }
+  [self setNeedsDisplay];
+}
+- (void)frameTick:(NSTimer *)timer { (void)timer; [self setNeedsDisplay]; }
+
+// 连续的精确实值（刻度）：按真实墙钟（含小数秒）线性推算，到止点等于日薪 tick。
+- (double)currentTickValue {
+  if (self.totalSeconds <= 0 || self.wageTick <= 0) return 0.0;
+  NSDate *now = NSDate.date;
+  NSCalendar *cal = [NSCalendar calendarWithIdentifier:NSCalendarIdentifierGregorian];
+  cal.timeZone = NSTimeZone.localTimeZone;
+  NSDateComponents *c = [cal components:(NSCalendarUnitHour | NSCalendarUnitMinute | NSCalendarUnitSecond)
+                               fromDate:now];
+  double sod = (double)c.hour * 3600.0 + (double)c.minute * 60.0 +
+               (double)c.second + now.timeIntervalSince1970 - floor(now.timeIntervalSince1970);
+  double elapsed = sod - (double)self.startSecond;
+  if (elapsed < 0) elapsed = 0;
+  if (elapsed > (double)self.totalSeconds) elapsed = (double)self.totalSeconds;
+  return self.wageTick * elapsed / (double)self.totalSeconds;
+}
+
+- (void)drawInContext:(CGContextRef)ctx {
+  NSGraphicsContext *gc = [NSGraphicsContext graphicsContextWithCGContext:ctx flipped:NO];
+  [NSGraphicsContext saveGraphicsState];
+  NSGraphicsContext.currentContext = gc;
+
+  const double V = self.active ? [self currentTickValue] : 0.0;
+  NSFont *font = [NSFont monospacedDigitSystemFontOfSize:self.fontSize weight:NSFontWeightRegular];
+  NSDictionary *attrs = @{NSFontAttributeName : font, NSForegroundColorAttributeName : self.numberColor};
+  NSString *symbol = self.symbol ?: @"";
+  const CGFloat W = NSWidth(self.bounds), H = NSHeight(self.bounds);
+
+  if ([self reduceMotion] || !self.active) {
+    // 降级：直接显示静态数值（不滚动）。
+    unsigned long long tick = (unsigned long long)llround(V < 0 ? 0 : V);
+    unsigned long long whole = tick / 100000ULL, frac = tick % 100000ULL;
+    NSString *text = [NSString stringWithFormat:@"%@%llu.%05llu", symbol, whole, frac];
+    CGFloat tw = [text sizeWithAttributes:attrs].width;
+    CGFloat th = [text sizeWithAttributes:attrs].height;
+    [text drawAtPoint:NSMakePoint((W - tw) / 2.0, (H - th) / 2.0) withAttributes:attrs];
+    [NSGraphicsContext restoreGraphicsState];
+    return;
+  }
+
+  const CGFloat symbolW = symbol.length ? [symbol sizeWithAttributes:attrs].width : 0.0;
+  const CGFloat digitAdv = [@"0" sizeWithAttributes:attrs].width + 1.0;
+  const CGFloat dotAdv = [@"." sizeWithAttributes:attrs].width + 1.0;
+  // 当前整数位数（至少 1）；小数固定 5 位。位数随金额增长平滑扩位。
+  unsigned long long whole = (unsigned long long)floor(V / 100000.0);
+  int intDigits = 1;
+  for (unsigned long long w = whole; w >= 10; w /= 10) ++intDigits;
+  const int maxE = intDigits + 4;  // 指数：0=末位(1 tick)，4=第 5 位小数，maxE=最高整数位
+  const int slotCount = maxE + 1;
+  const CGFloat totalW = symbolW + (CGFloat)slotCount * digitAdv + dotAdv;
+  CGFloat x = (W - totalW) / 2.0;
+  if (x < 2) x = 2;
+  const CGFloat lineH = ceil(self.fontSize * 1.12);
+  const CGFloat yBase = (H - self.fontSize) / 2.0;
+
+  if (symbolW > 0) { [symbol drawAtPoint:NSMakePoint(x, yBase) withAttributes:attrs]; x += symbolW; }
+  for (int e = maxE; e >= 0; --e) {
+    if (e == 4) {  // 小数点：整数与 5 位小数之间
+      [@"." drawAtPoint:NSMakePoint(x, yBase) withAttributes:attrs];
+      x += dotAdv;
+    }
+    double off = V / pow(10.0, e);
+    double base = fmod(off, 10.0);
+    if (base < 0) base += 10.0;
+    int fd = (int)floor(base);
+    double frac = base - fd;
+    // 裁剪到该位槽，竖向数字带按小数连续位移（k=0 当前位，k=1 下一位）。
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, CGRectMake(x, 0, digitAdv, H));
+    for (int k = -1; k <= 2; ++k) {
+      int dd = ((fd + k) % 10 + 10) % 10;
+      CGFloat y = yBase + (frac - (CGFloat)k) * lineH;
+      NSString *dg = [NSString stringWithFormat:@"%d", dd];
+      [dg drawAtPoint:NSMakePoint(x, y) withAttributes:attrs];
+    }
+    CGContextRestoreGState(ctx);
+    x += digitAdv;
+  }
+  [NSGraphicsContext restoreGraphicsState];
+}
+@end
+
 // A scene owns only the current picture set. Cached pixels are submitted once;
 // Core Animation interpolates each scalar using the pack's original curve.
 @interface NMLayerScene : NSObject
@@ -158,6 +300,9 @@
 @property(nonatomic, strong) NMNumberLayer *offworkDuration;
 @property(nonatomic, strong) CATextLayer *encouragerLabel;
 @property(nonatomic, strong) NMNumberLayer *encouragerAmount;
+@property(nonatomic, strong) NMOdometerLayer *encouragerOdometer;  // FB7 连续里程表金额
+@property(nonatomic) BOOL encouragerOdometerActive;
+@property(nonatomic) BOOL encouragerVisible;
 @property(nonatomic, strong) CALayer *encouragerBarBack;
 @property(nonatomic, strong) CALayer *encouragerBarFill;
 @property(nonatomic) double encouragerProgress;
@@ -184,6 +329,9 @@
                 preview:(BOOL)preview;
 - (void)setCounter:(NSString *)counter label:(NSString *)label duration:(NSString *)duration;
 - (void)setEncouragerLabel:(NSString *)label amount:(NSString *)amount progress:(double)progress visible:(BOOL)visible;
+- (void)setEncouragerOdometerActive:(BOOL)active wageTick:(double)wageTick
+                        startSecond:(int)startSecond totalSeconds:(int)totalSeconds
+                             symbol:(NSString *)symbol;
 - (void)applyEncouragerBar;
 - (void)play:(NSTimeInterval)duration;
 - (void)play:(NSTimeInterval)duration atTime:(CFTimeInterval)start;
@@ -252,7 +400,10 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     _encouragerLabel = NMSceneText(CGRectMake(0,0,240,22),15,NSColor.orangeColor);
     _encouragerAmount = [NMNumberLayer layer];
     _encouragerAmount.frame = CGRectMake(0,0,240,30);
-    _encouragerAmount.rollEnabled = YES;  // FB2 数字跳动动效
+    _encouragerAmount.rollEnabled = YES;  // FB2 数字跳动动效（倒计时主信息用）
+    _encouragerOdometer = [NMOdometerLayer layer];
+    _encouragerOdometer.frame = CGRectMake(0,0,240,30);
+    _encouragerOdometer.hidden = YES;
     _encouragerBarBack = [CALayer layer];
     _encouragerBarBack.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:.18].CGColor;
     _encouragerBarBack.cornerRadius = 4;
@@ -261,7 +412,7 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     _encouragerBarFill.cornerRadius = 4;
     [_encouragerBarBack addSublayer:_encouragerBarFill];
     for (CALayer *layer in @[_counter,_feedback,_offworkLabel,_offworkDuration,
-                             _encouragerLabel,_encouragerAmount,_encouragerBarBack])
+                             _encouragerLabel,_encouragerAmount,_encouragerOdometer,_encouragerBarBack])
       [_root addSublayer:layer];
   } return self;
 }
@@ -334,12 +485,16 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     // 鼓励器区域：最底部 84pt。FB13：顶部进度条 + 主信息 + 副信息。
     self.encouragerBarBack.frame=CGRectMake(20,encouragerHeight-12,200,8);
     self.encouragerAmount.frame=CGRectMake(0,encouragerHeight-46,240,30);
+    self.encouragerOdometer.frame=CGRectMake(0,encouragerHeight-46,240,30);
     self.encouragerLabel.frame=CGRectMake(0,encouragerHeight-72,240,22);
     const BOOL showEnc = !preview && encouragerHeight>0;
-    self.encouragerLabel.hidden=!showEnc; self.encouragerAmount.hidden=!showEnc;
+    self.encouragerVisible=showEnc;
+    self.encouragerLabel.hidden=!showEnc;
+    self.encouragerAmount.hidden=!showEnc || self.encouragerOdometerActive;
+    self.encouragerOdometer.hidden=!showEnc || !self.encouragerOdometerActive;
     self.encouragerBarBack.hidden=!showEnc;
     for (CALayer *layer in @[self.counter,self.feedback,self.offworkLabel,self.offworkDuration,
-                             self.encouragerLabel,self.encouragerAmount,self.encouragerBarBack])
+                             self.encouragerLabel,self.encouragerAmount,self.encouragerOdometer,self.encouragerBarBack])
       layer.contentsScale=MAX(1,backing*scale);
     [self applyEncouragerBar];
   });
@@ -363,18 +518,34 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
 - (void)setEncouragerLabel:(NSString *)label amount:(NSString *)amount progress:(double)progress visible:(BOOL)visible {
   NSColor *color=[NSColor colorWithCalibratedRed:.78 green:.39 blue:.12 alpha:1];
   self.encouragerProgress = progress;
+  self.encouragerVisible = visible;
   NMNoImplicit(^{
     NSString *oldLabel=[self.encouragerLabel.string isKindOfClass:NSAttributedString.class] ? [self.encouragerLabel.string string] : self.encouragerLabel.string;
     if(![oldLabel isEqual:label ?: @""]) { NMSetSceneText(self.encouragerLabel,label,15,color);self.textUpdates++; }
-    NSString *oldAmount = self.encouragerAmount.text ?: @"";
-    if(![oldAmount isEqual:amount ?: @""]) {
-      [self.encouragerAmount updateText:(amount ?: @"") size:26 color:color];
-      self.textUpdates++;
-      // FB2：金额变化时末位轻微滚动 + 淡入。
-      [self.encouragerAmount rollLastDigitIfChangedFrom:oldAmount to:amount ?: @""];
+    // 里程表激活时金额由 NMOdometerLayer 逐帧绘制；此处只维护倒计时等文本金额。
+    if (!self.encouragerOdometerActive) {
+      NSString *oldAmount = self.encouragerAmount.text ?: @"";
+      if(![oldAmount isEqual:amount ?: @""]) {
+        [self.encouragerAmount updateText:(amount ?: @"") size:26 color:color];
+        self.textUpdates++;
+        [self.encouragerAmount rollLastDigitIfChangedFrom:oldAmount to:amount ?: @""];
+      }
     }
+    self.encouragerAmount.hidden = !visible || self.encouragerOdometerActive;
+    self.encouragerOdometer.hidden = !visible || !self.encouragerOdometerActive;
     [self applyEncouragerBar];
   });
+}
+
+// FB7：配置/开关连续里程表金额层（主信息为「今日已赚」时启用）。
+- (void)setEncouragerOdometerActive:(BOOL)active wageTick:(double)wageTick
+                        startSecond:(int)startSecond totalSeconds:(int)totalSeconds
+                             symbol:(NSString *)symbol {
+  self.encouragerOdometerActive = active;
+  [self.encouragerOdometer configureActive:active wageTick:wageTick startSecond:startSecond
+                              totalSeconds:totalSeconds symbol:symbol];
+  self.encouragerAmount.hidden = !self.encouragerVisible || active;
+  self.encouragerOdometer.hidden = !self.encouragerVisible || !active;
 }
 
 - (void)applyRestPose {
@@ -394,6 +565,7 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
   });
 }
 - (void)stop {
+  [self.encouragerOdometer stop];
   [self.feedback removeAllAnimations];
   for(NSArray<CALayer *> *node in self.nodes) for(CALayer *layer in node)
     if(layer.animationKeys.count) [layer removeAllAnimations];

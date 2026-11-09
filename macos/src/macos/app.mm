@@ -625,6 +625,11 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, copy) NSString *progressMainText;
 @property(nonatomic, copy) NSString *progressSubText;
 @property(nonatomic) double progressFraction;
+@property(nonatomic) BOOL progressMainIsEarned;       // 主信息是否为「今日已赚」（启用里程表）
+@property(nonatomic) double progressWageTick;          // 每秒金额换算用：日薪 tick 总量
+@property(nonatomic) int progressStartSecond;
+@property(nonatomic) int progressTotalSeconds;
+@property(nonatomic, copy) NSString *progressSymbol;
 @property(nonatomic, strong) NSSegmentedControl *progressModeControl;
 @property(nonatomic) NSTimeInterval offworkLastSampleUptime;
 @property(nonatomic) NSTimeInterval offworkLastFlushUptime;
@@ -976,8 +981,14 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
                    offworkHeight:offworkHeight encouragerHeight:encouragerHeight preview:self.previewOnly];
   [self.renderer setCounter:[NSString stringWithFormat:@"%lld",self.controller.todayTotal]
                       label:self.controller.offworkDisplayLabel duration:self.controller.offworkDisplayDuration];
+  // FB7：主信息为「今日已赚」时启用逐帧连续里程表；否则用普通数字层显示倒计时等文本。
+  [self.renderer setEncouragerOdometerActive:self.controller.progressMainIsEarned
+                                    wageTick:self.controller.progressWageTick
+                                 startSecond:self.controller.progressStartSecond
+                                totalSeconds:self.controller.progressTotalSeconds
+                                      symbol:self.controller.progressSymbol ?: @""];
   [self.renderer setEncouragerLabel:self.controller.progressSubText
-                             amount:self.controller.progressMainText
+                             amount:self.controller.progressMainIsEarned ? @"" : (self.controller.progressMainText ?: @"")
                            progress:self.controller.progressFraction
                             visible:encouragerHeight>0];
   if(self.pendingAnimationDuration>0) {
@@ -1376,15 +1387,15 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   NSString *countdownValue = off.valid
       ? OffworkDurationText(off.overtime ? off.overtimeSeconds : off.remainingSeconds) : @"--:--:--";
   NSString *countdownLabel = off.overtime ? UiText(@"已加班", @"Overtime") : UiText(@"距下班", @"Until off work");
-  // 已赚读数（复用 FB8 工时联动 + 1e-5 元刻度；数字滚动沿用 FB7）。
+  // 已赚读数（复用 FB8 工时联动 + 1e-5 元刻度；屏幕金额走 FB7 连续里程表）。
   const BOOL wageValid = self.encouragerDailyWageMinor > 0 && window.Valid();
   NSString *code = self.encouragerCurrency.length ? self.encouragerCurrency : @"CNY";
   const int exponent = niuma::encourager::ExponentForCode(std::string(code.UTF8String ?: "CNY"));
   const std::string symbol = niuma::encourager::SymbolForCode(std::string(code.UTF8String ?: "CNY"));
+  const std::uint64_t wageTick =
+      niuma::encourager::WageMinorToTick(self.encouragerDailyWageMinor, exponent);
   NSString *earnedValue = nil;
   if (wageValid) {
-    const std::uint64_t wageTick =
-        niuma::encourager::WageMinorToTick(self.encouragerDailyWageMinor, exponent);
     const std::uint64_t earnedTick = niuma::encourager::EarnedTick(wageTick, window, secondOfDay);
     earnedValue = [NSString stringWithUTF8String:
         niuma::encourager::FormatTickAmount(earnedTick, symbol).c_str()];
@@ -1392,6 +1403,13 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   NSInteger mode = self.progressShowMode;
   // 未填日薪 → 只能倒计时；选「今日已赚」但无日薪 → 自动回落倒计时。
   if (!wageValid && mode != kProgressModeCountdown) mode = kProgressModeCountdown;
+  const BOOL mainEarned = (mode == kProgressModeEarned || mode == kProgressModeBoth) && wageValid;
+  // 里程表参数：供 NMOdometerLayer 逐帧按真实时间连续推算。
+  self.progressMainIsEarned = mainEarned;
+  self.progressWageTick = (double)wageTick;
+  self.progressStartSecond = window.Valid() ? window.StartSecond() : 0;
+  self.progressTotalSeconds = window.TotalSeconds();
+  self.progressSymbol = [NSString stringWithUTF8String:symbol.c_str()];
   if (mode == kProgressModeEarned) {
     self.progressMainText = earnedValue;
     // 下班后即便只显示今日已赚，也补一句「已加班 X」。
