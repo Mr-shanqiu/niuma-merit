@@ -34,6 +34,7 @@
 #include "../offwork_clock.h"
 #include "../client/core/visibility_state.h"
 #include "../client/core/scroll_tick_counter.h"
+#include "../client/core/work_encourager.h"
 #include "../calendar_month_range.h"
 #include "../reminder_activity.h"
 #include "../reminder_geometry.h"
@@ -141,6 +142,7 @@ constexpr int kDesignHeight = 250;
 constexpr int kWindowDipWidth = 120;
 constexpr int kWindowDipHeight = 125;
 constexpr int kOffworkDipHeight = 44;
+constexpr int kEncouragerDipHeight = 84;
 // F0 scroll gesture boundary now lives in ScrollTickCounter (shared with the
 // authoritative input thread); the legacy per-gesture debounce is gone.
 constexpr ULONGLONG kTempoResetGapMs = 600;
@@ -202,6 +204,7 @@ enum class MeritScene : int {
   LuckyCat = 1,
   SeaLionBellyPat = 2,
   HamsterWheel = 3,
+  Encourager = 4,  // F2：builtin.encourager（CONTRACT §3/§13 场景 0..4）
 };
 
 struct PngResource {
@@ -255,6 +258,18 @@ struct AppState {
   bool reminderCatalogCommitUncertain = false;
   MeritScene selectedScene = MeritScene::Woodfish;
   std::string selectedPackId;
+  // F2 · 上班鼓励器（设置与展示状态）。
+  bool encouragerEnabled = false;
+  std::uint64_t encouragerDailyWageMinor = 0;
+  std::string encouragerCurrency = "CNY";
+  bool encouragerCurrencyOverride = false;
+  int encouragerStartMinute = 540;
+  int encouragerEndMinute = 1080;
+  bool encouragerActive = false;
+  std::wstring encouragerLabel;
+  std::wstring encouragerAmount;
+  float encouragerProgress = 0.0f;
+  HWND encouragerDialog = nullptr;
 };
 
 AppState gState;
@@ -264,6 +279,7 @@ NOTIFYICONDATAW gTray{};
 HWND gLastFullscreenWindow = nullptr;
 void ShowContextMenu(HWND window, POINT screenPoint);void RenderLayeredWindow(ULONGLONG now);
 SYSTEMTIME CalendarToday();
+void ClampWindowToWorkArea();
 void ApplyWindowVisibility();
 void RefreshFullscreenVisibility();
 
@@ -527,7 +543,8 @@ struct OffworkState {
 OffworkState gOffwork;
 
 int MainWindowDipHeight() {
-  return kWindowDipHeight + (gOffwork.enabled ? kOffworkDipHeight : 0);
+  return kWindowDipHeight + (gOffwork.enabled ? kOffworkDipHeight : 0) +
+      (gState.encouragerActive ? kEncouragerDipHeight : 0);
 }
 
 std::wstring OffworkWide(const std::string& value) {
@@ -854,7 +871,8 @@ std::string ReadSelectedPackId() {
 }
 
 niuma::AppearancePack* CurrentAppearancePack() {
-  if (gState.selectedPackId.empty() && gState.selectedScene != MeritScene::Woodfish) {
+  if (gState.selectedPackId.empty() && gState.selectedScene != MeritScene::Woodfish &&
+      gState.selectedScene != MeritScene::Encourager) {
     gState.selectedScene = MeritScene::Woodfish;
     gState.dirty = true;
   }
@@ -1601,6 +1619,84 @@ void PumpMetrics() {
   gMetrics.Flush(TodayLocalDateKey());
 }
 
+// ---- F2 上班鼓励器：设置装配 / 每秒求值 / 底栏文本 ----
+
+const char* UiLanguageTag() { return IsChineseUi() ? "zh-Hans" : "en"; }
+
+std::wstring EncouragerWide(const std::string& value) {
+  return std::wstring(value.begin(), value.end());
+}
+
+niuma::encourager::Window EncouragerWindow() {
+  niuma::encourager::Window window;
+  window.start_minute = gState.encouragerStartMinute;
+  window.end_minute = gState.encouragerEndMinute;
+  return window;
+}
+
+// 当前展示货币：覆盖优先，否则跟随 UI 语言（§9）。
+std::string EffectiveCurrencyCode() {
+  if (gState.encouragerCurrencyOverride && !gState.encouragerCurrency.empty())
+    return gState.encouragerCurrency;
+  return std::string(niuma::encourager::CurrencyForLanguage(UiLanguageTag()).code);
+}
+
+// 从侧车加载鼓励器设置；无侧车时保持默认（关闭）。
+void LoadEncouragerState() {
+  if (!gMetricsReady) { RefreshEncourager(true); return; }
+  const auto& block = gMetrics.encourager();
+  gState.encouragerEnabled = block.enabled;
+  gState.encouragerDailyWageMinor = block.daily_wage_minor;
+  gState.encouragerCurrency = block.currency.empty() ? "CNY" : block.currency;
+  gState.encouragerCurrencyOverride = block.currency_override;
+  gState.encouragerStartMinute = block.start_minute;
+  gState.encouragerEndMinute = block.end_minute;
+  RefreshEncourager(true);
+}
+
+// 每秒求值：返回 true 表示展示文本/进度/窗口高度发生变化（需要重绘）。
+bool RefreshEncourager(bool force) {
+  SYSTEMTIME now{};
+  GetLocalTime(&now);
+  const int secondOfDay = now.wHour * 3600 + now.wMinute * 60 + now.wSecond;
+  const auto status = niuma::encourager::Evaluate(
+      gState.encouragerDailyWageMinor, gState.encouragerEnabled, EncouragerWindow(),
+      secondOfDay);
+  const std::string code = EffectiveCurrencyCode();
+  const int exponent = niuma::encourager::ExponentForCode(code);
+  const std::string symbol = niuma::encourager::SymbolForCode(code);
+  const std::wstring amount = EncouragerWide(
+      niuma::encourager::FormatAmountMinor(status.earned_minor, exponent, symbol));
+  const std::wstring label = UiText(L"今日已赚", L"Earned today");
+  const float progress = static_cast<float>(status.progress);
+  const bool wasActive = gState.encouragerActive;
+  const bool active = status.valid;
+  const bool changed = force || wasActive != active || amount != gState.encouragerAmount ||
+      progress != gState.encouragerProgress || label != gState.encouragerLabel;
+  gState.encouragerActive = active;
+  gState.encouragerAmount = amount;
+  gState.encouragerLabel = label;
+  gState.encouragerProgress = progress;
+  if (active && gState.selectedScene != MeritScene::Encourager && gState.selectedPackId.empty()) {
+    gState.selectedScene = MeritScene::Encourager;
+    gState.dirty = true;
+  } else if (!active && gState.selectedScene == MeritScene::Encourager) {
+    gState.selectedScene = MeritScene::Woodfish;
+    gState.dirty = true;
+  }
+  return changed;
+}
+
+// 选择鼓励器场景后按窗口高度重排（保持左上角并钳制到可用区）。
+void ApplyEncouragerLayout() {
+  if (!gState.window) return;
+  gState.windowHeight = ScaleDip(MainWindowDipHeight(), gState.dpi);
+  SetWindowPos(gState.window, nullptr, 0, 0, gState.windowWidth, gState.windowHeight,
+      SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  ClampWindowToWorkArea();
+  RenderLayeredWindow(GetTickCount64());
+}
+
 // ---- F4 曲线窗口：数据装配（app 只负责喂数据，绘制在 curve_view.cpp）----
 
 // 取某本地日的曲线桶与覆盖位图；无 0.9.6 采集记录返回 false。
@@ -1869,6 +1965,45 @@ void DrawSceneArtwork(
     return;
   }
 
+  if (scene == MeritScene::Encourager) {
+    // F2 内置插画：工牌 + 工资条（纯 GDI+，不新增 PNG 资源）。
+    const GraphicsState state = graphics.Save();
+    // 工牌挂绳
+    Gdiplus::Pen lanyard(Gdiplus::Color(255, 120, 120, 128), 3.0f);
+    graphics.DrawLine(&lanyard, 120.0f, 34.0f, 120.0f, 74.0f);
+    // 工牌卡片
+    Gdiplus::GraphicsPath card;
+    niuma::ui::RoundPath(card, RectF(70.0f, 74.0f, 100.0f, 92.0f), 10.0f);
+    Gdiplus::SolidBrush cardFill(Gdiplus::Color(255, 250, 250, 252));
+    Gdiplus::Pen cardBorder(Gdiplus::Color(255, 214, 214, 222), 1.5f);
+    graphics.FillPath(&cardFill, &card);
+    graphics.DrawPath(&cardBorder, &card);
+    // 头像圆
+    Gdiplus::SolidBrush face(Gdiplus::Color(255, 240, 139, 35));
+    graphics.FillEllipse(&face, 100.0f, 88.0f, 40.0f, 40.0f);
+    // 工牌文字条
+    Gdiplus::SolidBrush line(Gdiplus::Color(255, 210, 210, 218));
+    graphics.FillRectangle(&line, RectF(88.0f, 136.0f, 64.0f, 6.0f));
+    graphics.FillRectangle(&line, RectF(94.0f, 148.0f, 52.0f, 5.0f));
+    // 工资条
+    const GraphicsState slipState = graphics.Save();
+    graphics.TranslateTransform(120.0f, 196.0f);
+    graphics.RotateTransform(-6.0f + 2.0f * strikeAmount);
+    Gdiplus::GraphicsPath slip;
+    niuma::ui::RoundPath(slip, RectF(-52.0f, -10.0f, 104.0f, 46.0f), 6.0f);
+    Gdiplus::SolidBrush slipFill(Gdiplus::Color(255, 255, 248, 235));
+    Gdiplus::Pen slipBorder(Gdiplus::Color(255, 232, 210, 176), 1.0f);
+    graphics.FillPath(&slipFill, &slip);
+    graphics.DrawPath(&slipBorder, &slip);
+    Gdiplus::SolidBrush slipLine(Gdiplus::Color(255, 224, 196, 150));
+    graphics.FillRectangle(&slipLine, RectF(-42.0f, 2.0f, 44.0f, 5.0f));
+    graphics.FillRectangle(&slipLine, RectF(-42.0f, 14.0f, 62.0f, 5.0f));
+    graphics.FillRectangle(&slipLine, RectF(-42.0f, 26.0f, 34.0f, 5.0f));
+    graphics.Restore(slipState);
+    graphics.Restore(state);
+    return;
+  }
+
   // Mirror the accepted Mac woodfish geometry into the top-left coordinate
   // system: y = 250 - macY. Keep artwork below the independent +1 band.
   const GraphicsState woodfishState = graphics.Save();
@@ -2018,6 +2153,12 @@ void RenderCompositionWindow(ULONGLONG now) {
       view.text.countdownDuration = clock.valid ? OffworkTimeText(clock.overtime
           ? clock.overtimeSeconds : clock.remainingSeconds) : L"--:--:--";
     }
+    view.text.encouragerVisible = gState.encouragerActive;
+    if (gState.encouragerActive) {
+      view.text.encouragerLabel = gState.encouragerLabel;
+      view.text.encouragerAmount = gState.encouragerAmount;
+      view.text.encouragerProgress = gState.encouragerProgress;
+    }
     if (!gDisplay.display->DrawLatest(view, now, gState.windowWidth, gState.windowHeight)) {
       FailCompositionDisplay(); return;
     }
@@ -2141,6 +2282,22 @@ void RenderLayeredWindow(ULONGLONG now) {
             Gdiplus::RectF(durationLeft + cellWidth * static_cast<float>(index),
                           286, cellWidth, 42),
             24.0f, Gdiplus::Color(255, 240, 139, 35));
+      }
+    }
+    if (gState.encouragerActive) {
+      // F2 底栏：标签 + 金额 + 进度条（与 composition 槽同一设计坐标）。
+      DrawWidgetText(graphics, gState.encouragerLabel,
+          Gdiplus::RectF(12, 340, 216, 26), 20.0f,
+          Gdiplus::Color(255, 248, 244, 235), Gdiplus::FontStyleRegular);
+      DrawWidgetText(graphics, gState.encouragerAmount,
+          Gdiplus::RectF(12, 366, 216, 42), 24.0f,
+          Gdiplus::Color(255, 240, 139, 35));
+      Gdiplus::SolidBrush track(Gdiplus::Color(70, 248, 244, 235));
+      graphics.FillRectangle(&track, Gdiplus::RectF(18, 424, 204, 10));
+      if (gState.encouragerProgress > 0.0f) {
+        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 240, 139, 35));
+        graphics.FillRectangle(&fill, Gdiplus::RectF(18, 424,
+            204.0f * gState.encouragerProgress, 10));
       }
     }
   }
@@ -3994,6 +4151,7 @@ const wchar_t* SceneTitle(MeritScene scene) {
     case MeritScene::LuckyCat: return UiText(L"招财猫", L"Lucky Cat");
     case MeritScene::SeaLionBellyPat: return UiText(L"海狮拍肚皮", L"Sea Lion Belly Pat");
     case MeritScene::HamsterWheel: return UiText(L"仓鼠跑轮", L"Hamster Wheel");
+    case MeritScene::Encourager: return UiText(L"上班鼓励器", L"Work Encourager");
     default: return UiText(L"默认木鱼", L"Woodfish");
   }
 }
@@ -4976,6 +5134,296 @@ void ShowOffworkSettings(HWND owner) {
   }
 }
 
+// ---- F2 · 上班鼓励器设置对话框 ----
+
+constexpr int kEncouragerEnable = 5201;
+constexpr int kEncouragerWage = 5202;
+constexpr int kEncouragerCurrencyCombo = 5203;
+constexpr int kEncouragerOverride = 5204;
+constexpr int kEncouragerStartHour = 5205;
+constexpr int kEncouragerStartMinuteValue = 5206;
+constexpr int kEncouragerEndHour = 5207;
+constexpr int kEncouragerEndMinuteValue = 5208;
+
+// 解析「元」文本为最小货币单位整数；拒绝负号、多小数点与超精度非零尾数。
+bool ParseWageText(const std::wstring& text, int exponent, std::uint64_t* out) {
+  if (!out || exponent < 0 || exponent > 6) return false;
+  std::uint64_t whole = 0, frac = 0;
+  int fracDigits = 0;
+  bool seenDot = false, any = false, overflow = false;
+  for (wchar_t c : text) {
+    if (c == L' ' || c == L',' || c == L'\t') continue;
+    if (c == L'.') {
+      if (seenDot) return false;
+      seenDot = true;
+      continue;
+    }
+    if (c < L'0' || c > L'9') return false;
+    any = true;
+    if (!seenDot) {
+      if (whole > (UINT64_MAX - 9) / 10) { overflow = true; continue; }
+      whole = whole * 10 + static_cast<std::uint64_t>(c - L'0');
+    } else if (fracDigits < exponent) {
+      frac = frac * 10 + static_cast<std::uint64_t>(c - L'0');
+      ++fracDigits;
+    } else if (c != L'0') {
+      return false;  // 超过该货币最小单位精度且非零。
+    }
+  }
+  if (!any || overflow) return false;
+  while (fracDigits < exponent) { frac *= 10; ++fracDigits; }
+  std::uint64_t scale = 1;
+  for (int i = 0; i < exponent; ++i) scale *= 10;
+  if (whole > (UINT64_MAX - frac) / scale) return false;
+  *out = whole * scale + frac;
+  return true;
+}
+
+struct EncouragerCurrencyChoice {
+  const wchar_t* code;
+  const wchar_t* title;
+};
+constexpr EncouragerCurrencyChoice kEncouragerCurrencies[] = {
+    {L"CNY", L"CN\u00a5 CNY"}, {L"TWD", L"NT$ TWD"}, {L"JPY", L"JP\u00a5 JPY"},
+    {L"USD", L"US$ USD"}, {L"EUR", L"\u20ac EUR"}, {L"GBP", L"\u00a3 GBP"}};
+
+void PopulateEncouragerTimeCombos(HWND window, UINT dpi) {
+  wchar_t text[4] = {};
+  for (int value = 0; value < 60; ++value) {
+    swprintf_s(text, L"%02d", value);
+    SendDlgItemMessageW(window, kEncouragerStartMinuteValue, CB_ADDSTRING, 0,
+                        reinterpret_cast<LPARAM>(text));
+    SendDlgItemMessageW(window, kEncouragerEndMinuteValue, CB_ADDSTRING, 0,
+                        reinterpret_cast<LPARAM>(text));
+    if (value < 24)
+      SendDlgItemMessageW(window, kEncouragerStartHour, CB_ADDSTRING, 0,
+                          reinterpret_cast<LPARAM>(text));
+    if (value <= 24)
+      SendDlgItemMessageW(window, kEncouragerEndHour, CB_ADDSTRING, 0,
+                          reinterpret_cast<LPARAM>(text));
+  }
+  (void)dpi;
+}
+
+INT_PTR CALLBACK EncouragerDialogProcedure(HWND window, UINT message, WPARAM wParam, LPARAM) {
+  switch (message) {
+    case WM_INITDIALOG: {
+      gState.encouragerDialog = window;
+      SetWindowTextW(window, UiText(L"上班鼓励器", L"Work Encourager"));
+      const UINT dpi = gState.dpi ? gState.dpi : 96;
+      const auto control = [window, dpi](const wchar_t* cls, const wchar_t* text,
+          DWORD style, int x, int y, int width, int height, int id) {
+        HWND child = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style,
+            ScaleDip(x, dpi), ScaleDip(y, dpi), ScaleDip(width, dpi), ScaleDip(height, dpi),
+            window, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+            GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(child, WM_SETFONT, static_cast<WPARAM>(
+            GetWindowLongPtrW(window, GWLP_USERDATA)), TRUE);
+        return child;
+      };
+      const HFONT font = CreateFontW(-ScaleDip(14, dpi), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
+          FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+          DEFAULT_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+      SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(font ? font :
+          GetStockObject(DEFAULT_GUI_FONT)));
+      SetWindowLongPtrW(window, DWLP_USER, reinterpret_cast<LONG_PTR>(font));
+
+      control(L"BUTTON", UiText(L"启用上班鼓励器", L"Enable work encourager"),
+          BS_AUTOCHECKBOX | WS_TABSTOP, 20, 18, 380, 28, kEncouragerEnable);
+      control(L"STATIC", UiText(L"日薪（0 表示关闭）", L"Daily wage (0 disables)"),
+          0, 20, 56, 200, 24, -1);
+      control(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP,
+          150, 52, 140, 26, kEncouragerWage);
+      control(L"BUTTON", UiText(L"手动指定货币", L"Override currency"),
+          BS_AUTOCHECKBOX | WS_TABSTOP, 20, 92, 180, 24, kEncouragerOverride);
+      control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+          210, 88, 170, 240, kEncouragerCurrencyCombo);
+      for (const auto& choice : kEncouragerCurrencies)
+        SendDlgItemMessageW(window, kEncouragerCurrencyCombo, CB_ADDSTRING, 0,
+                            reinterpret_cast<LPARAM>(choice.title));
+
+      control(L"STATIC", UiText(L"上班时段（起 < 止，24 小时制）",
+                                L"Work window (start < end, 24-hour)"),
+          0, 20, 130, 380, 24, -1);
+      control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+          20, 158, 74, 240, kEncouragerStartHour);
+      control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+          98, 158, 74, 240, kEncouragerStartMinuteValue);
+      control(L"STATIC", L"\u2192", SS_CENTER, 176, 160, 24, 22, -1);
+      control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+          204, 158, 74, 240, kEncouragerEndHour);
+      control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+          282, 158, 74, 240, kEncouragerEndMinuteValue);
+      PopulateEncouragerTimeCombos(window, dpi);
+
+      control(L"STATIC", UiText(
+          L"显示「今日已赚」与今日上班进度条：时段内按墙钟每秒累计，到止点等于日薪。\r\n"
+          L"时段外暂停，每日零点归零，周末同样生效；跨午夜时段本期不支持。\r\n"
+          L"金额仅本地保存与展示，不写入日志、分享卡或网络。",
+          L"Shows “Earned today” and a work-progress bar: accrues by the wall clock within\r\n"
+          L"the window and reaches the daily wage at the end. It pauses outside the window,\r\n"
+          L"resets at midnight, and applies on weekends. Overnight windows are not supported.\r\n"
+          L"Amounts stay local and are never logged, shared, or sent."),
+          0, 20, 212, 392, 92, -1);
+      control(L"BUTTON", UiText(L"取消", L"Cancel"), WS_TABSTOP | BS_PUSHBUTTON,
+          214, 320, 86, 32, IDCANCEL);
+      control(L"BUTTON", UiText(L"保存", L"Save"), WS_TABSTOP | BS_DEFPUSHBUTTON,
+          310, 320, 86, 32, IDOK);
+
+      RECT rect = {0, 0, ScaleDip(416, dpi), ScaleDip(372, dpi)};
+      AdjustWindowRectEx(&rect, WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
+          FALSE, WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT);
+      MONITORINFO monitor = {sizeof(monitor)};
+      GetMonitorInfoW(MonitorFromWindow(GetWindow(window, GW_OWNER), MONITOR_DEFAULTTONEAREST),
+                      &monitor);
+      const int width = rect.right - rect.left, height = rect.bottom - rect.top;
+      niuma::ui::Apply(window);
+      SetWindowPos(window, nullptr,
+          monitor.rcWork.left + std::max(0, static_cast<int>(
+              monitor.rcWork.right - monitor.rcWork.left - width) / 2),
+          monitor.rcWork.top + std::max(0, static_cast<int>(
+              monitor.rcWork.bottom - monitor.rcWork.top - height) / 2),
+          width, height, SWP_NOZORDER);
+
+      // 填充当前值（不提交）。
+      CheckDlgButton(window, kEncouragerEnable,
+                     gState.encouragerEnabled ? BST_CHECKED : BST_UNCHECKED);
+      CheckDlgButton(window, kEncouragerOverride,
+                     gState.encouragerCurrencyOverride ? BST_CHECKED : BST_UNCHECKED);
+      const std::string code = gState.encouragerCurrencyOverride
+          ? gState.encouragerCurrency : std::string(
+              niuma::encourager::CurrencyForLanguage(UiLanguageTag()).code);
+      const int exponent = niuma::encourager::ExponentForCode(code);
+      const std::wstring wageText = EncouragerWide(niuma::encourager::FormatAmountMinor(
+          gState.encouragerDailyWageMinor, exponent, ""));
+      SetDlgItemTextW(window, kEncouragerWage, wageText.c_str());
+      for (int i = 0; i < static_cast<int>(std::size(kEncouragerCurrencies)); ++i) {
+        if (code == std::string(kEncouragerCurrencies[i].code)) {
+          SendDlgItemMessageW(window, kEncouragerCurrencyCombo, CB_SETCURSEL, i, 0);
+          break;
+        }
+      }
+      SendDlgItemMessageW(window, kEncouragerStartHour, CB_SETCURSEL,
+                          gState.encouragerStartMinute / 60, 0);
+      SendDlgItemMessageW(window, kEncouragerStartMinuteValue, CB_SETCURSEL,
+                          gState.encouragerStartMinute % 60, 0);
+      SendDlgItemMessageW(window, kEncouragerEndHour, CB_SETCURSEL,
+                          gState.encouragerEndMinute / 60, 0);
+      SendDlgItemMessageW(window, kEncouragerEndMinuteValue, CB_SETCURSEL,
+                          gState.encouragerEndMinute % 60, 0);
+      EnableWindow(GetDlgItem(window, kEncouragerCurrencyCombo),
+                   gState.encouragerCurrencyOverride);
+      return TRUE;
+    }
+    case WM_COMMAND:
+      if (LOWORD(wParam) == kEncouragerOverride && HIWORD(wParam) == BN_CLICKED) {
+        EnableWindow(GetDlgItem(window, kEncouragerCurrencyCombo),
+                     IsDlgButtonChecked(window, kEncouragerOverride) == BST_CHECKED);
+        return TRUE;
+      }
+      if (LOWORD(wParam) == IDOK) {
+        const int selected = static_cast<int>(SendDlgItemMessageW(
+            window, kEncouragerCurrencyCombo, CB_GETCURSEL, 0, 0));
+        const bool overrideCurrency =
+            IsDlgButtonChecked(window, kEncouragerOverride) == BST_CHECKED;
+        std::string code = EffectiveCurrencyCode();
+        if (overrideCurrency && selected >= 0 &&
+            selected < static_cast<int>(std::size(kEncouragerCurrencies)))
+          code = kEncouragerCurrencies[selected].code;
+        const int exponent = niuma::encourager::ExponentForCode(code);
+        wchar_t wageBuffer[64] = {};
+        GetDlgItemTextW(window, kEncouragerWage, wageBuffer, std::size(wageBuffer));
+        std::uint64_t wageMinor = 0;
+        if (!ParseWageText(wageBuffer, exponent, &wageMinor)) {
+          niuma::ui::Message(window,
+              UiText(L"日薪格式不正确，请输入例如 200.00 的金额。",
+                     L"Enter the daily wage as a number, for example 200.00."),
+              WindowTitle(), MB_OK | MB_ICONWARNING);
+          SetFocus(GetDlgItem(window, kEncouragerWage));
+          return TRUE;
+        }
+        const int startHour = static_cast<int>(SendDlgItemMessageW(
+            window, kEncouragerStartHour, CB_GETCURSEL, 0, 0));
+        const int startMinute = static_cast<int>(SendDlgItemMessageW(
+            window, kEncouragerStartMinuteValue, CB_GETCURSEL, 0, 0));
+        const int endHour = static_cast<int>(SendDlgItemMessageW(
+            window, kEncouragerEndHour, CB_GETCURSEL, 0, 0));
+        const int endMinute = static_cast<int>(SendDlgItemMessageW(
+            window, kEncouragerEndMinuteValue, CB_GETCURSEL, 0, 0));
+        const int startTotal = startHour * 60 + startMinute;
+        const int endTotal = endHour * 60 + endMinute;
+        if (startHour < 0 || startMinute < 0 || endHour < 0 || endMinute < 0 ||
+            startTotal < 0 || endTotal > 1440 || startTotal >= endTotal) {
+          niuma::ui::Message(window,
+              UiText(L"上班时段必须满足「开始早于结束」，且不超过 24 小时。跨午夜时段本期不支持。",
+                     L"The work window must start before it ends and stay within 24 hours. Overnight windows are not supported yet."),
+              WindowTitle(), MB_OK | MB_ICONWARNING);
+          return TRUE;
+        }
+        const bool enabled =
+            IsDlgButtonChecked(window, kEncouragerEnable) == BST_CHECKED;
+        // 先写侧车，成功后再切到内存态（失败只降级本功能）。
+        if (gMetricsReady) {
+          auto& block = gMetrics.encourager();
+          block.enabled = enabled;
+          block.daily_wage_minor = wageMinor;
+          block.currency = code;
+          block.currency_override = overrideCurrency;
+          block.start_minute = startTotal;
+          block.end_minute = endTotal;
+          gMetrics.MarkDirty();
+          if (!gMetrics.Flush(TodayLocalDateKey())) {
+            niuma::ui::Message(window,
+                UiText(L"本次设置已在内存生效，但未能写入本地侧车；程序会稍后重试。",
+                       L"Settings are active in memory, but the local sidecar could not be written. The app will retry."),
+                WindowTitle(), MB_OK | MB_ICONWARNING);
+          }
+        }
+        gState.encouragerEnabled = enabled;
+        gState.encouragerDailyWageMinor = wageMinor;
+        gState.encouragerCurrency = code;
+        gState.encouragerCurrencyOverride = overrideCurrency;
+        gState.encouragerStartMinute = startTotal;
+        gState.encouragerEndMinute = endTotal;
+        RefreshEncourager(true);
+        ApplyEncouragerLayout();
+        SaveState();
+        EndDialog(window, IDOK);
+        return TRUE;
+      }
+      if (LOWORD(wParam) == IDCANCEL) {
+        EndDialog(window, IDCANCEL);
+        return TRUE;
+      }
+      break;
+    case WM_CLOSE:
+      EndDialog(window, IDCANCEL);
+      return TRUE;
+    case WM_DESTROY: {
+      const auto font = reinterpret_cast<HFONT>(GetWindowLongPtrW(window, DWLP_USER));
+      if (font) DeleteObject(font);
+      gState.encouragerDialog = nullptr;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+void ShowEncouragerSettings(HWND owner) {
+  alignas(DWORD) WORD storage[64] = {};
+  auto* dialog = reinterpret_cast<DLGTEMPLATE*>(storage);
+  dialog->style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME;
+  dialog->dwExtendedStyle = WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT;
+  dialog->cx = 240;
+  dialog->cy = 180;
+  if (DialogBoxIndirectParamW(GetModuleHandleW(nullptr), dialog, owner,
+                              EncouragerDialogProcedure, 0) == -1) {
+    niuma::ui::Message(owner, UiText(L"无法打开上班鼓励器设置。",
+                                    L"Unable to open work encourager settings."),
+        WindowTitle(), MB_OK | MB_ICONERROR);
+  }
+}
+
 void ImportOfficialMessages(HWND owner, const std::wstring& filename) {
   if (!gState.catalogStore) {
     niuma::ui::Message(owner,
@@ -5141,6 +5589,7 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
   append(kMenuAppearance, UiText(L"更换形象", L"Change Appearance"), L"\xE77B");
   append(kMenuCalendar, UiText(L"功德日历…", L"Merit Calendar…"), L"\xE787");
   append(kMenuCurve, UiText(L"牛马曲线…", L"Merit Curve…"), L"\xE9D2");
+  append(kMenuEncourager, UiText(L"上班鼓励器…", L"Work Encourager…"), L"\xE8C7", gState.encouragerActive);
   append(kMenuOffwork, UiText(L"下班倒计时…", L"Off-work Countdown…"), L"\xE823", gOffwork.enabled);
   if (IsRuntimeCandidate()) {
     append(kMenuLaunchAtLogin, UiText(L"测试数据 · 自动启动已禁用", L"Test data · Startup disabled"), L"\xE7F4", false, true);
@@ -5201,6 +5650,8 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
     ShowMeritCalendar(window);
   } else if (command == static_cast<int>(kMenuCurve)) {
     ShowMeritCurve(window);
+  } else if (command == static_cast<int>(kMenuEncourager)) {
+    ShowEncouragerSettings(window);
   } else if (command == static_cast<int>(kMenuOffwork)) {
     ShowOffworkSettings(window);
   } else if (command == static_cast<int>(kMenuQuit)) {
@@ -5490,6 +5941,13 @@ LRESULT CALLBACK WindowProcedure(
           SendInputCommand(command);
         }
         PumpMetrics();
+        // F2：每秒求值上班鼓励器；仅文本/进度/窗口高度变化时重绘。
+        {
+          const bool wasActive = gState.encouragerActive;
+          const bool encouragerChanged = RefreshEncourager(false);
+          if (wasActive != gState.encouragerActive) ApplyEncouragerLayout();
+          else if (encouragerChanged) RenderLayeredWindow(GetTickCount64());
+        }
         const ULONGLONG now = GetTickCount64();
         const auto nowUtc = static_cast<std::int64_t>(std::time(nullptr));
         const auto clockTransition = gState.reminderClockGuard.Observe(nowUtc, now);
@@ -5928,15 +6386,18 @@ int WINAPI wWinMain(
   gState.dpi = SystemDpi();
   LoadOffworkSettings();
   InitializeMetrics();  // F4 sidecar: degrade-only, never blocks startup.
+  LoadEncouragerState();  // F2: settings live in the sidecar; 0 disables.
   if (gDataStorage.model) gVisibility.autoHideFullscreen = gDataStorage.model->current().autoHideFullscreen;
   gState.windowWidth = ScaleDip(kWindowDipWidth, gState.dpi);
   gState.windowHeight = ScaleDip(MainWindowDipHeight(), gState.dpi);
   gState.total = ReadIniTotal();
   EnsureCurrentDay();
   const long selectedScene = ReadIniLong(L"selected_scene", 0);
-  gState.selectedScene = selectedScene >= 0 && selectedScene <= 3
+  gState.selectedScene = selectedScene >= 0 && selectedScene <= 4
       ? static_cast<MeritScene>(selectedScene)
       : MeritScene::Woodfish;
+  // F2：鼓励器已启用且未选外部形象包时，固定显示场景 4（builtin.encourager）。
+  if (gState.encouragerActive) gState.selectedScene = MeritScene::Encourager;
   gState.selectedPackId = ReadSelectedPackId();
   if (!gState.selectedPackId.empty() && gAppearanceCatalog.Find(gState.selectedPackId) == nullptr) {
     niuma::ui::Message(nullptr,

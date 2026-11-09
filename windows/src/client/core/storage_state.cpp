@@ -12,7 +12,7 @@ std::uint64_t Plus(std::uint64_t value, std::uint64_t delta) noexcept {
   return value > never - delta ? never : value + delta;
 }
 bool Valid(const StorageAppearance& value) {
-  return value.selectedScene >= 0 && value.selectedScene <= 3 &&
+  return value.selectedScene >= 0 && value.selectedScene <= 4 &&
       std::all_of(value.selectedPackId.begin(), value.selectedPackId.end(),
                   [](unsigned char c) { return c >= 32 && c < 127; });
 }

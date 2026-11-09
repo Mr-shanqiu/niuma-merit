@@ -35,9 +35,19 @@ class MetricsRuntime {
 
   bool loaded() const noexcept { return loaded_; }
   bool dirty() const noexcept { return dirty_; }
+  void MarkDirty() noexcept { dirty_ = true; }
   std::size_t curve_days() const noexcept { return root_.curve_days.size(); }
   const DWORD lastError() const noexcept { return lastError_; }
   const niuma::metrics::Root& root() const noexcept { return root_; }
+  // 变更入口（UI owner 线程）：改完视图后必须 MarkDirty()，由批量 flush 落盘。
+  niuma::metrics::Prefs& prefs() noexcept { return root_.prefs; }
+  niuma::metrics::Encourager& encourager() noexcept { return root_.encourager; }
+  niuma::metrics::Medals& medals() noexcept { return root_.medals; }
+  niuma::metrics::Migration& migration() noexcept { return root_.migration; }
+  // 曲线日条目（供对账补建 coverage 全 0 的日）。
+  std::map<std::string, niuma::metrics::CurveDayValue>& curve_days() noexcept {
+    return root_.curve_days;
+  }
 
  private:
   niuma::metrics::win::MetricsFileStore store_{std::wstring()};

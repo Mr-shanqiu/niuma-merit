@@ -11,7 +11,11 @@
 
 namespace niuma::runtime {
 
-enum class WidgetTextSlot : std::uint8_t { Merit = 0, PlusOne = 1, Countdown = 2 };
+enum class WidgetTextSlot : std::uint8_t {
+    Merit = 0, PlusOne = 1, Countdown = 2,
+    // F2 底栏：一次栅格化「标签 + 金额 + 进度条」，避免渲染器新增图元类型。
+    Encourager = 3
+};
 
 // Defaults reproduce app.cpp: outlined YaHei UI for merit/clock, and the
 // separate Segoe UI bold DrawString path for +1. Colors are straight ARGB.
@@ -35,9 +39,14 @@ struct WidgetTextInput {
     std::wstring plusOne = L"+1";
     std::wstring countdownLabel;
     std::wstring countdownDuration;
+    // F2：底栏标签/金额/进度（0..1）。进度条并入同一栅格，随 slot 缓存。
+    std::wstring encouragerLabel;
+    std::wstring encouragerAmount;
+    float encouragerProgress = 0;
     bool meritVisible = true;
     bool plusVisible = false;
     bool countdownVisible = false;
+    bool encouragerVisible = false;
     float pixelScale = 1;
     WidgetTextStyle style;
 };
@@ -64,7 +73,7 @@ struct WidgetTextCacheStats {
     // Retained masks plus a prepared replacement; excludes temporary span-work
     // allocations inside PrepareAlphaMask. Separately accounted from pixels.
     std::uint64_t peakMaskBytes = 0;
-    std::array<std::uint64_t, 3> redraws{};
+    std::array<std::uint64_t, 4> redraws{};
     std::uint64_t failures = 0;
     std::size_t entries = 0;
     // GDI+ path control points/types only; opaque native object/allocator
@@ -74,7 +83,7 @@ struct WidgetTextCacheStats {
 };
 // Last Update only; disabled by default. No text or historical samples.
 struct WidgetTextTiming {
-    std::array<double, 3> buildMs{}, rasterMs{}, maskMs{};
+    std::array<double, 4> buildMs{}, rasterMs{}, maskMs{};
     std::uint8_t changedMask = 0;
 };
 

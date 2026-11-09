@@ -8,7 +8,8 @@ namespace {
 namespace graphics = niuma::runtime;
 constexpr std::uint64_t kTextKey = 0x100;
 constexpr graphics::WidgetTextSlot kSlots[] = {graphics::WidgetTextSlot::Merit,
-    graphics::WidgetTextSlot::PlusOne, graphics::WidgetTextSlot::Countdown};
+    graphics::WidgetTextSlot::PlusOne, graphics::WidgetTextSlot::Countdown,
+    graphics::WidgetTextSlot::Encourager};
 void TextQuad(const graphics::WidgetTextImage& image, graphics::WidgetTextSlot slot,
               float scale, float plusY, std::vector<graphics::CompositionQuad>& quads) {
   const auto& r = image.logicalRect;
@@ -30,7 +31,7 @@ bool ClientDisplay::Initialize(HWND window,int width,int height,bool software,bo
 }
 bool ClientDisplay::InstallTextures(const PreparedAppearanceScene* scene,std::uint64_t version) {
   std::vector<graphics::CompositionTexture> textures;
-  textures.reserve(9);
+  textures.reserve(13);
   if (scene) for (const auto& image : scene->images)
     textures.push_back({image.id,version,&image.pixels});
   for (auto slot : kSlots) if (const auto* t = text_.Get(slot))
@@ -83,7 +84,7 @@ bool ClientDisplay::DrawLatest(const ClientDisplayState& state,std::uint64_t now
   if (!InstallTextures(scene_.get(),sceneVersion_)) return false;
   markStage(timing_.texturesMs);
   std::vector<graphics::CompositionQuad> quads;
-  quads.reserve(9);
+  quads.reserve(13);
   if (frame) for(std::size_t i=0;i<frame->quadCount;++i) {
     const auto& source=frame->quads[i];
     const auto* image=scene_->Find(source.image);
@@ -102,9 +103,9 @@ bool ClientDisplay::DrawLatest(const ClientDisplayState& state,std::uint64_t now
     quads.push_back(q);
   }
   const float plusY=frame ? frame->plusOneRect.y/state.text.pixelScale : 46.f;
-  // Preserve existing order: artwork, +1, merit and the separate clock band.
+  // Preserve existing order: artwork, +1, merit, clock band, then the F2 band.
   for(auto slot : {graphics::WidgetTextSlot::PlusOne,graphics::WidgetTextSlot::Merit,
-                  graphics::WidgetTextSlot::Countdown})
+                  graphics::WidgetTextSlot::Countdown,graphics::WidgetTextSlot::Encourager})
     if (text_.Visible(slot)) {
       const auto* image=text_.Get(slot);
       if (!image) { error_="Visible text has no prepared image"; return false; }

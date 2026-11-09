@@ -254,7 +254,7 @@ StorageFileState LoadState(const Document& document) {
   if (x && y && Signed(*x, px) && Signed(*y, py) && px >= INT32_MIN && px <= INT32_MAX &&
       py >= INT32_MIN && py <= INT32_MAX) state.window = {true, static_cast<std::int32_t>(px), static_cast<std::int32_t>(py)};
   const auto scene = integer("state", "selected_scene", 0);
-  state.appearance.selectedScene = scene >= 0 && scene <= 3 ? static_cast<int>(scene) : 0;
+  state.appearance.selectedScene = scene >= 0 && scene <= 4 ? static_cast<int>(scene) : 0;
   if (const auto* pack = get("state", "selected_pack_id")) {
     state.appearance.selectedPackId = Ascii(*pack);
     if (!std::all_of(state.appearance.selectedPackId.begin(), state.appearance.selectedPackId.end(),

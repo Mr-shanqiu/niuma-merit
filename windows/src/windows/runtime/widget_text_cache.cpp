@@ -19,11 +19,14 @@ struct TextKey {
     float scale = 1, firstSize = 0, secondSize = 0, outlineWidth = 0;
     std::uint32_t firstColor = 0, secondColor = 0, outlineColor = 0;
     int fontStyle = 0;
+    // F2 底栏进度（0..1）；量化为千分之一以稳定缓存键。
+    float progress = 0;
     bool operator==(const TextKey& other) const {
         return first == other.first && second == other.second && family == other.family &&
             scale == other.scale && firstSize == other.firstSize && secondSize == other.secondSize &&
             outlineWidth == other.outlineWidth && firstColor == other.firstColor &&
-            secondColor == other.secondColor && outlineColor == other.outlineColor && fontStyle == other.fontStyle;
+            secondColor == other.secondColor && outlineColor == other.outlineColor &&
+            fontStyle == other.fontStyle && progress == other.progress;
     }
 };
 bool ValidSize(float value) { return std::isfinite(value) && value > 0 && value <= 128; }
@@ -32,8 +35,12 @@ bool ValidInput(const WidgetTextInput& input) {
     return std::isfinite(input.pixelScale) && input.pixelScale > 0 && input.pixelScale <= 64 &&
         input.merit.size() <= 128 && input.plusOne.size() <= 32 &&
         input.countdownLabel.size() <= 128 && input.countdownDuration.size() <= 32 &&
+        input.encouragerLabel.size() <= 128 && input.encouragerAmount.size() <= 32 &&
+        std::isfinite(input.encouragerProgress) && input.encouragerProgress >= 0 &&
+        input.encouragerProgress <= 1 &&
         (!input.meritVisible || !input.merit.empty()) && !input.plusOne.empty() &&
         (!input.countdownVisible || (!input.countdownLabel.empty() && !input.countdownDuration.empty())) &&
+        (!input.encouragerVisible || (!input.encouragerLabel.empty() && !input.encouragerAmount.empty())) &&
         !s.widgetFamily.empty() && s.widgetFamily.size() <= 128 &&
         !s.plusFamily.empty() && s.plusFamily.size() <= 128 &&
         ValidSize(s.meritFont) && ValidSize(s.longMeritFont) && ValidSize(s.longestMeritFont) &&
@@ -67,6 +74,15 @@ TextKey KeyFor(WidgetTextSlot slot, const WidgetTextInput& input) {
             key.first = input.merit; key.firstColor = s.meritColor;
             key.firstSize = input.merit.size() > 24 ? s.longestMeritFont :
                 input.merit.size() > 18 ? s.longMeritFont : s.meritFont;
+        } else if (slot == WidgetTextSlot::Encourager) {
+            // 进度条随进度变化；量化到千分之一，避免亚像素抖动导致每次重建。
+            key.first = input.encouragerLabel;
+            key.second = input.encouragerAmount;
+            key.firstSize = s.labelFont;
+            key.secondSize = s.durationFont;
+            key.firstColor = s.labelColor;
+            key.secondColor = s.durationColor;
+            key.progress = std::round(input.encouragerProgress * 1000.0f) / 1000.0f;
         } else {
             key.first = input.countdownLabel; key.second = input.countdownDuration;
             key.firstSize = s.labelFont; key.secondSize = s.durationFont;
@@ -180,6 +196,23 @@ bool Draw(Gdiplus::Graphics& graphics, WidgetTextSlot slot, const TextKey& key, 
         return graphics.DrawString(key.first.c_str(), -1, &font, Gdiplus::RectF(0, 0, 240, 30),
             &format, &brush) == Gdiplus::Ok;
     }
+    if (slot == WidgetTextSlot::Encourager) {
+        // 底栏设计坐标：offwork 段（256..330）之后为鼓励器段（336..508）。
+        if (!DrawWidget(graphics, key, key.first, {12, 340, 216, 26},
+                key.firstSize, key.firstColor, glyphs, true)) return false;
+        if (!DrawWidget(graphics, key, key.second, {12, 366, 216, 42},
+                key.secondSize, key.secondColor, glyphs, true)) return false;
+        const float progress = key.progress;
+        Gdiplus::SolidBrush track(Gdiplus::Color(70, 248, 244, 235));
+        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 240, 139, 35));
+        const Gdiplus::RectF bar(18, 424, 204, 10);
+        if (graphics.FillRectangle(&track, bar) != Gdiplus::Ok) return false;
+        if (progress > 0) {
+            const Gdiplus::RectF value(bar.X, bar.Y, bar.Width * progress, bar.Height);
+            if (graphics.FillRectangle(&fill, value) != Gdiplus::Ok) return false;
+        }
+        return true;
+    }
     if (!DrawWidget(graphics, key, key.first, {12, 258, 216, 28}, key.firstSize, key.firstColor, glyphs, true)) return false;
     constexpr float cellWidth = 17;
     const float left = (240 - cellWidth * static_cast<float>(key.second.size())) / 2;
@@ -193,8 +226,8 @@ bool Draw(Gdiplus::Graphics& graphics, WidgetTextSlot slot, const TextKey& key, 
 
 struct WidgetTextCache::Impl {
     struct Entry { TextKey key; WidgetTextImage image; };
-    std::array<std::unique_ptr<Entry>, 3> entries;
-    std::array<bool, 3> visible{};
+    std::array<std::unique_ptr<Entry>, 4> entries;
+    std::array<bool, 4> visible{};
     WidgetTextCacheStats stats;
     WidgetGlyphContext glyphs{stats};
     std::uint64_t nextVersion = 0;
@@ -206,8 +239,12 @@ struct WidgetTextCache::Impl {
         const auto started = timingEnabled ? Clock::now() : Clock::time_point{};
         // Extra two design units retain text antialiasing without a full-window
         // text texture. The rectangle remains aligned to physical texels.
-        const float top = slot == WidgetTextSlot::Countdown ? 256 : slot == WidgetTextSlot::PlusOne ? -2 : 0;
-        const float bottom = slot == WidgetTextSlot::Countdown ? 330 : slot == WidgetTextSlot::PlusOne ? 32 : 42;
+        const float top = slot == WidgetTextSlot::Countdown ? 256 :
+            slot == WidgetTextSlot::Encourager ? 336 :
+            slot == WidgetTextSlot::PlusOne ? -2 : 0;
+        const float bottom = slot == WidgetTextSlot::Countdown ? 330 :
+            slot == WidgetTextSlot::Encourager ? 508 :
+            slot == WidgetTextSlot::PlusOne ? 32 : 42;
         const double width = std::ceil(240.0 * key.scale);
         const double physicalTop = std::floor(static_cast<double>(top) * key.scale);
         const double height = std::ceil(static_cast<double>(bottom) * key.scale) - physicalTop;
@@ -278,7 +315,8 @@ WidgetTextUpdate WidgetTextCache::Update(const WidgetTextInput& input) {
     };
     if (!ValidInput(input)) return fail("widget text input or style is invalid");
     try {
-        const std::array<bool, 3> active{input.meritVisible, true, input.countdownVisible};
+        const std::array<bool, 4> active{input.meritVisible, true, input.countdownVisible,
+                                         input.encouragerVisible};
         for (std::size_t i = 0; i < state.entries.size(); ++i) {
             if (!active[i]) continue;
             const auto slot = static_cast<WidgetTextSlot>(i);
@@ -302,7 +340,8 @@ WidgetTextUpdate WidgetTextCache::Update(const WidgetTextInput& input) {
             result.changedMask |= static_cast<std::uint8_t>(1u << i);
             if (state.timingEnabled) state.timing.changedMask = result.changedMask;
         }
-        state.visible = {input.meritVisible, input.plusVisible, input.countdownVisible};
+        state.visible = {input.meritVisible, input.plusVisible, input.countdownVisible,
+                         input.encouragerVisible};
         result.success = true;
     } catch (const std::bad_alloc&) { return fail("widget text allocation failed"); }
     return result;
