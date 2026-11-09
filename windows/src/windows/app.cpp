@@ -1857,7 +1857,8 @@ std::wstring ScalePercentText(double scale) {
   return std::to_wstring(static_cast<int>(std::lround(scale * 100.0))) + L"%";
 }
 
-INT_PTR CALLBACK AppearanceScaleDialogProcedure(HWND window, UINT message, WPARAM wParam, LPARAM) {
+INT_PTR CALLBACK AppearanceScaleDialogProcedure(HWND window, UINT message, WPARAM wParam,
+                                                LPARAM lParam) {
   switch (message) {
     case WM_INITDIALOG: {
       SetWindowTextW(window, UiText(L"形象大小", L"Appearance Size"));
