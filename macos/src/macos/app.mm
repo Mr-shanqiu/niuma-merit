@@ -585,6 +585,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, strong) NSPopUpButton *encouragerStartMinuteControl;
 @property(nonatomic, strong) NSPopUpButton *encouragerEndHourControl;
 @property(nonatomic, strong) NSPopUpButton *encouragerEndMinuteControl;
+@property(nonatomic, strong) NSTextField *encouragerRateLabel;  // FB8 每秒金额实时预览
 // F4 牛马曲线（FB1 起并入功德日历窗口，作为「日曆 / 曲線」分段视图）
 @property(nonatomic, strong) NMCurveView *curveView;
 @property(nonatomic, strong) NSSegmentedControl *calendarModeControl;
@@ -768,6 +769,8 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)refreshEncouragerDisplay;
 - (void)showEncouragerSettings:(id)sender;
 - (void)encouragerCurrencyOverrideChanged:(id)sender;
+- (void)encouragerSettingsValueChanged:(id)sender;
+- (void)updateEncouragerRatePreview;
 - (void)saveEncouragerSettings:(id)sender;
 - (void)cancelEncouragerSettings:(id)sender;
 - (CGFloat)desiredExtraRegionHeight;
@@ -1756,6 +1759,19 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
     explanation.textColor = NMUiMuted();
     [content addSubview:explanation];
 
+    // FB8：显示「每秒金额 = 日薪 ÷ 上班总秒数」，并随日薪/上下班时段编辑实时刷新。
+    self.encouragerRateLabel = [NSTextField labelWithString:@""];
+    self.encouragerRateLabel.frame = NSMakeRect(24, 58, 422, 22);
+    self.encouragerRateLabel.font = [NSFont systemFontOfSize:11];
+    self.encouragerRateLabel.textColor = NMUiMuted();
+    [content addSubview:self.encouragerRateLabel];
+    for (NSControl *control in @[self.encouragerWageField,
+             self.encouragerStartHourControl, self.encouragerStartMinuteControl,
+             self.encouragerEndHourControl, self.encouragerEndMinuteControl]) {
+      control.target = self;
+      control.action = @selector(encouragerSettingsValueChanged:);
+    }
+
     NSButton *cancel = [NSButton buttonWithTitle:UiText(@"取消", @"Cancel")
         target:self action:@selector(cancelEncouragerSettings:)];
     cancel.frame = NSMakeRect(262, 20, 88, 30);
@@ -1799,6 +1815,43 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   (void)sender;
   BOOL overrideOn = self.encouragerCurrencyOverrideControl.state == NSControlStateValueOn;
   self.encouragerCurrencyControl.enabled = overrideOn;
+  [self updateEncouragerRatePreview];
+}
+
+- (void)encouragerSettingsValueChanged:(id)sender {
+  (void)sender;
+  [self updateEncouragerRatePreview];
+}
+
+// FB8：按当前（未保存）日薪与上下班时段，实时显示「每秒金额 = 日薪 ÷ 上班总秒数」。
+- (void)updateEncouragerRatePreview {
+  if (!self.encouragerRateLabel) return;
+  BOOL overrideOn = self.encouragerCurrencyOverrideControl.state == NSControlStateValueOn;
+  NSString *code = overrideOn
+      ? (self.encouragerCurrencyControl.selectedItem.representedObject ?: @"CNY")
+      : [NSString stringWithUTF8String:DefaultCurrencyForCurrentLanguage().code];
+  int exponent = niuma::encourager::ExponentForCode(std::string(code.UTF8String ?: "CNY"));
+  std::string symbol = niuma::encourager::SymbolForCode(std::string(code.UTF8String ?: "CNY"));
+  NSInteger startMinute = self.encouragerStartHourControl.indexOfSelectedItem * 60 +
+      self.encouragerStartMinuteControl.indexOfSelectedItem;
+  NSInteger endHour = self.encouragerEndHourControl.indexOfSelectedItem;
+  NSInteger endMinute = endHour * 60 + self.encouragerEndMinuteControl.indexOfSelectedItem;
+  if (endHour == 24 && self.encouragerEndMinuteControl.indexOfSelectedItem != 0) endMinute = -1;
+  niuma::encourager::Window window{(int)startMinute, (int)endMinute};
+  unsigned long long wageMinor = 0;
+  BOOL parsed = NMParseAmountToMinor(self.encouragerWageField.stringValue, exponent, &wageMinor);
+  if (!parsed || wageMinor == 0 || !window.Valid()) {
+    self.encouragerRateLabel.stringValue = UiText(@"每秒金额：—", @"Per second: —");
+    return;
+  }
+  const std::uint64_t wageTick = niuma::encourager::WageMinorToTick(wageMinor, exponent);
+  const std::uint64_t perSecTick = niuma::encourager::PerSecondTick(wageTick, window);
+  NSString *amount = [NSString stringWithUTF8String:
+      niuma::encourager::FormatTickAmount(perSecTick, symbol).c_str()];
+  const int totalSeconds = window.TotalSeconds();
+  self.encouragerRateLabel.stringValue = [NSString stringWithFormat:
+      UiText(@"每秒金额：%@（日薪 ÷ %d 小时 %d 分）", @"Per second: %@ (daily wage ÷ %d h %d min)"),
+      amount, totalSeconds / 3600, (totalSeconds % 3600) / 60];
 }
 
 - (void)cancelEncouragerSettings:(id)sender {

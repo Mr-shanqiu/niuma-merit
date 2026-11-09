@@ -130,6 +130,33 @@ int main() {
     }
   }
 
+  // --- FB8：每秒金额按工时精确推算，随上下班时段变化 ---
+  {
+    Window w8{540, 1020};   // 09:00-17:00 => 28800s（8h）
+    Window w9{540, 1080};   // 09:00-18:00 => 32400s（9h）
+    CHECK(w8.TotalSeconds() == 8 * 3600);
+    CHECK(w9.TotalSeconds() == 9 * 3600);
+    // 同一日薪 200.00 元（20000 minor）：时段越长，每秒金额越小。
+    const std::uint64_t wageMinor = 20000;
+    const std::uint64_t wageTick = WageMinorToTick(wageMinor, 2);  // 20000000 tick
+    const std::uint64_t ps8 = PerSecondTick(wageTick, w8);
+    const std::uint64_t ps9 = PerSecondTick(wageTick, w9);
+    CHECK(ps8 > ps9);                          // 8h 的每秒 > 9h 的每秒
+    CHECK(ps8 == 20000000ULL / 28800);         // 694
+    CHECK(ps9 == 20000000ULL / 32400);         // 617
+    // 恰好等于「日薪 ÷ 总秒数」，不是某个与工时无关的常数。
+    CHECK(PerSecondMinor(wageMinor, w8) == 20000ULL / 28800);
+    // 小额最小单位会截断为 0，用大额验证「同一日薪、时段不同 → 每秒不同」。
+    CHECK(PerSecondMinor(2000000000ULL, w8) != PerSecondMinor(2000000000ULL, w9));
+    // 到止点仍精确等于日薪（每秒金额 × 总秒数约等于日薪，截断误差 < 总秒数）。
+    CHECK(EarnedTick(wageTick, w8, w8.EndSecond()) == wageTick);
+    CHECK(EarnedTick(wageTick, w9, w9.EndSecond()) == wageTick);
+    // 非法/零输入 => 0。
+    CHECK(PerSecondTick(wageTick, Window{540, 540}) == 0);
+    CHECK(PerSecondTick(0, w9) == 0);
+    CHECK(PerSecondMinor(0, w9) == 0);
+  }
+
   if (g_fail == 0) std::printf("work_encourager_test: OK\n");
   else std::printf("work_encourager_test: %d FAILURES\n", g_fail);
   return g_fail == 0 ? 0 : 1;

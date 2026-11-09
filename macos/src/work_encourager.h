@@ -190,6 +190,26 @@ inline std::uint64_t EarnedTick(std::uint64_t daily_wage_tick, const Window& win
   return static_cast<std::uint64_t>(scaled / static_cast<unsigned __int128>(total));
 }
 
+// FB8 · 每秒金额 = 日薪 ÷ 上班时段总秒数（按工时精确推算，**不是常数增量**）。
+// 以 128 位中间量取整，避免溢出；窗口非法或日薪为 0 时返回 0。
+// 单位与入参一致：PerSecondMinor 返回最小货币单位的每秒值（会截断，仅供粗算），
+// PerSecondTick 返回「元 × 1e5」刻度的每秒值（用于 5 位小数展示）。
+// 由于「今日工钱」到止点恰等于日薪，两者关系恒为 earned(t) = perSecond * 已过秒数，
+// 上班时段一变（总秒数变），每秒金额即随之变化。
+inline std::uint64_t PerSecondMinor(std::uint64_t daily_wage_minor, const Window& window) {
+  const int total = window.TotalSeconds();
+  if (daily_wage_minor == 0 || total <= 0) return 0;
+  return static_cast<std::uint64_t>(static_cast<unsigned __int128>(daily_wage_minor) /
+                                    static_cast<unsigned __int128>(total));
+}
+
+inline std::uint64_t PerSecondTick(std::uint64_t daily_wage_tick, const Window& window) {
+  const int total = window.TotalSeconds();
+  if (daily_wage_tick == 0 || total <= 0) return 0;
+  return static_cast<std::uint64_t>(static_cast<unsigned __int128>(daily_wage_tick) /
+                                    static_cast<unsigned __int128>(total));
+}
+
 // 把「元 × 1e5」整数刻度格式化为「符号 + 千分位整数 + '.' + 5 位小数」。
 // 例：2 -> "CN¥0.00002"；3 -> "NT$0.00003"；4 -> "US$0.00004"；12000000 -> "CN¥120.00000"。
 inline std::string FormatTickAmount(std::uint64_t tick, const std::string& symbol) {
