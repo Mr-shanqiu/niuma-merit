@@ -20,6 +20,7 @@
 #include "render_cache.h"
 #include "runtime/input_service.h"
 #include "runtime/storage_service.h"
+#include "runtime/metrics_runtime.h"
 #include "runtime/appearance_service.h"
 #include "runtime/client_display.h"
 #include "runtime/platform_compat.h"
@@ -31,6 +32,7 @@
 #endif
 #include "../offwork_clock.h"
 #include "../client/core/visibility_state.h"
+#include "../client/core/scroll_tick_counter.h"
 #include "../calendar_month_range.h"
 #include "../reminder_activity.h"
 #include "../reminder_geometry.h"
@@ -138,7 +140,8 @@ constexpr int kDesignHeight = 250;
 constexpr int kWindowDipWidth = 120;
 constexpr int kWindowDipHeight = 125;
 constexpr int kOffworkDipHeight = 44;
-constexpr ULONGLONG kScrollGestureGapMs = 180;
+// F0 scroll gesture boundary now lives in ScrollTickCounter (shared with the
+// authoritative input thread); the legacy per-gesture debounce is gone.
 constexpr ULONGLONG kTempoResetGapMs = 600;
 constexpr int kDefaultStrikeMs = 220;
 constexpr int kMinStrikeMs = 120;
@@ -395,6 +398,18 @@ struct CountingCheck {
 };
 
 CountingCheck gCountingCheck;
+// F0 fallback path (only used when the authoritative input thread is not
+// running). Owns scroll gesture budget/residue exactly like the input thread's
+// counter, so a wheel gesture is bounded the same way in both paths.
+niuma::client::core::ScrollTickCounter gFallbackScrollCounter;
+bool gFallbackScrollSeen = false;
+ULONGLONG gFallbackLastScrollMs = 0;
+
+// F4: curve-day collection into metrics-096.json (UI owner only; never touched
+// from input callbacks or the render path).
+niuma::windows::runtime::MetricsRuntime gMetrics;
+bool gMetricsReady = false;
+ULONGLONG gLastCurveHeartbeatMs = 0;
 std::vector<std::string> gNewlyImportedIds;
 std::vector<std::string> gLastImportedIds;
 PngResource gFish;
@@ -805,6 +820,15 @@ std::wstring DataPath() {
     return directory + L"\\data.ini";
   }();
   return path;
+}
+
+// Directory that holds data.ini (and metrics-096.json). Isolated acceptance
+// mode keeps both beside gAcceptanceRoot.
+std::wstring DataDirectory() {
+  const std::wstring dataPath = DataPath();
+  const size_t separator = dataPath.find_last_of(L"\\/");
+  if (separator == std::wstring::npos) return {};
+  return dataPath.substr(0, separator);
 }
 
 std::wstring AppearanceDirectory() {
@@ -1539,6 +1563,37 @@ bool DataStorageIdle() {
 void SaveState() {
   gState.dirty = true;
   PumpDataStorage();
+}
+
+// ---- F4 curve sidecar glue (UI owner only) ----
+
+std::string TodayLocalDateKey() {
+  SYSTEMTIME now{};
+  GetLocalTime(&now);
+  char buf[16] = {};
+  std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u",
+      static_cast<unsigned>(now.wYear), static_cast<unsigned>(now.wMonth),
+      static_cast<unsigned>(now.wDay));
+  return std::string(buf);
+}
+
+void InitializeMetrics() {
+  if (gMetricsReady) return;
+  const std::wstring directory = DataDirectory();
+  if (directory.empty()) return;
+  const auto nowUtc = static_cast<std::int64_t>(std::time(nullptr));
+  gMetricsReady = gMetrics.Load(directory, nowUtc);
+  if (gMetricsReady) gMetrics.Flush(TodayLocalDateKey());
+}
+
+void ApplyCurveFromLedger(const std::vector<input_core::CurveDayRecord>& records) {
+  if (!gMetricsReady || records.empty()) return;
+  gMetrics.ApplyCurve(records);
+}
+
+void PumpMetrics() {
+  if (!gMetricsReady || !gMetrics.dirty()) return;
+  gMetrics.Flush(TodayLocalDateKey());
 }
 
 bool LoadPngResource(int resourceId, PngResource& output) {
@@ -2350,18 +2405,24 @@ void CountOneOperation() {
   if (gCalendar.window != nullptr) InvalidateRect(gCalendar.window, nullptr, FALSE);
 }
 
-void CountScrollGesture() {
-  const ULONGLONG now = GetTickCount64();
-  const bool startsNewGesture =
-      gState.lastScrollEventTime == 0 ||
-      now - gState.lastScrollEventTime > kScrollGestureGapMs;
-  gState.lastScrollEventTime = now;
-  if (startsNewGesture) {
-    CountOneOperation();
-  }
+void CountScrollTicks(int ticks) {
+  if (ticks <= 0) return;
+  // F0: each event carries the number of whole 120-delta ticks it consumed.
+  // Bounded by ScrollTickCounter (<= kMaxTicksPerEvent per event). Count one
+  // merit operation per tick; CountOneOperation handles expected/counted so a
+  // multi-tick event is neither dropped nor double-counted.
+  for (int i = 0; i < ticks; ++i) CountOneOperation();
 }
 
-void QueueGlobalInput(UINT message, unsigned int kind) {
+// lParam packing for delivered input: low 16 bits = self-check generation
+// (0 = not an observed delivery), high 16 bits = F0 scroll ticks for this
+// event (0 for keyboard/click). Generation values are tiny user-driven
+// counters, far below 0xFFFF; if one ever overflows we drop the observable
+// tagging rather than misreport a self-check.
+constexpr LPARAM kDeliveryTicksShift = 16;
+constexpr LPARAM kDeliveryGenerationMask = 0xFFFF;
+
+void QueueGlobalInput(UINT message, unsigned int kind, int scrollTicks = 0) {
   const ULONGLONG now = GetTickCount64();
   const bool observing = gCountingCheck.active &&
       now >= gCountingCheck.starts && now < gCountingCheck.ends;
@@ -2371,8 +2432,15 @@ void QueueGlobalInput(UINT message, unsigned int kind) {
     else ++gCountingCheck.scrolls;
     gCountingCheck.lastRelative = now - gCountingCheck.starts;
   }
-  if (!PostMessageW(gState.window, message, gCountingCheck.listenerGeneration,
-          observing ? static_cast<LPARAM>(gCountingCheck.generation) : 0)) {
+  const bool tagGeneration =
+      observing && gCountingCheck.generation <= static_cast<unsigned>(kDeliveryGenerationMask);
+  LPARAM packed = tagGeneration
+      ? (static_cast<LPARAM>(gCountingCheck.generation) & kDeliveryGenerationMask)
+      : 0;
+  const int clampedTicks = std::clamp(scrollTicks, 0,
+      niuma::client::core::ScrollTickCounter::kMaxTicksPerEvent);
+  packed |= static_cast<LPARAM>(clampedTicks) << kDeliveryTicksShift;
+  if (!PostMessageW(gState.window, message, gCountingCheck.listenerGeneration, packed)) {
     gCountingCheck.deliveryFault = true;
   }
 }
@@ -2747,11 +2815,25 @@ LRESULT CALLBACK MouseHook(
         QueueGlobalInput(kCountMessage, 2);
         break;
       case WM_MOUSEWHEEL:
-      case WM_MOUSEHWHEEL:
+      case WM_MOUSEHWHEEL: {
         if (reminderInputAllowed)
           SampleReminderInput(niuma::reminder::ActivitySampler::Event::ScrollPulse);
-        QueueGlobalInput(kScrollMessage, 3);
+        // F0: convert this event's wheel delta into whole merit ticks using
+        // the fallback counter (gesture-boundary + residue + caps), then hand
+        // the tick count to the UI thread with the delivery so exactly one
+        // accounting happens per physical event.
+        const auto* event = reinterpret_cast<const MSLLHOOKSTRUCT*>(data);
+        const int wheelDelta = static_cast<short>(HIWORD(event->mouseData));
+        const ULONGLONG now = GetTickCount64();
+        const bool newGesture = !gFallbackScrollSeen ||
+            niuma::client::core::ScrollTickCounter::IdleGapExceeded(
+                gFallbackLastScrollMs, now);
+        const int ticks = gFallbackScrollCounter.Consume(wheelDelta, newGesture);
+        gFallbackScrollSeen = true;
+        gFallbackLastScrollMs = now;
+        QueueGlobalInput(kScrollMessage, 3, ticks);
         break;
+      }
       default:
         break;
     }
@@ -2759,13 +2841,16 @@ LRESULT CALLBACK MouseHook(
   return CallNextHookEx(gState.mouseHook, code, message, data);
 }
 
-void CountGlobalDelivery(bool scroll, LPARAM generation, WPARAM listenerGeneration) {
+void CountGlobalDelivery(bool scroll, LPARAM packed, WPARAM listenerGeneration) {
   if (gInput.authoritative || gInput.loadFailed) return;
+  const unsigned int generation =
+      static_cast<unsigned int>(packed & kDeliveryGenerationMask);
+  const int scrollTicks = static_cast<int>(
+      (static_cast<unsigned long long>(packed) >> kDeliveryTicksShift) & 0xFF);
   const std::uint64_t before = gState.total;
-  gCountingCheck.counting = generation != 0 &&
-      static_cast<unsigned int>(generation) == gCountingCheck.generation;
+  gCountingCheck.counting = generation != 0 && generation == gCountingCheck.generation;
   if (gCountingCheck.counting) ++gCountingCheck.handled;
-  if (scroll) CountScrollGesture();
+  if (scroll) CountScrollTicks(scrollTicks);
   else CountOneOperation();
   gCountingCheck.counting = false;
   if (gState.total > before && listenerGeneration == gCountingCheck.listenerGeneration)
@@ -2882,8 +2967,10 @@ void ConsumeInputSnapshot() {
           ledger.header.input.epoch == gInput.latest.input.epoch) {
         gInput.ledger = ledger.header.input;
         gInput.daily.assign(ledger.daily.begin(), ledger.daily.end());
+        ApplyCurveFromLedger(ledger.curve);
         gState.dirty = true;
         PumpDataStorage();
+        PumpMetrics();
         if (gCalendar.window) InvalidateRect(gCalendar.window, nullptr, FALSE);
       } else if (ledger.header.status == input_core::LedgerResultStatus::EpochMismatch ||
                  ledger.header.status == input_core::LedgerResultStatus::Complete) {
@@ -3063,8 +3150,8 @@ void RefreshCountingStatus() {
           L"Events arrived but counts did not fully update. Retry the listener; counts also stop at the numeric limit.");
     } else if (gCountingCheck.expected == 0) {
       gCountingCheck.result = UiText(
-          L"只观察到同一段连续滚动，未开始新手势；停一下再试，不判失败。",
-          L"Only an existing scroll gesture was observed. Pause and retry; no failure inferred.");
+          L"滚动距离不足 1 刻度，未产生计数；继续滚动或稍后再试，不判失败。",
+          L"Scroll distance did not reach one tick, so nothing counted; keep scrolling or retry later. No failure inferred.");
     } else {
       gCountingCheck.deliveryFault = false;
       gCountingCheck.result = UiText(
@@ -3097,7 +3184,7 @@ void RefreshCountingStatus() {
   text += UiText(L"；实际增加：", L"; actual increase: ") + std::to_wstring(gCountingCheck.counted);
   text += UiText(L"\r\n最后事件距开始的毫秒数：", L"\r\nLast event, milliseconds after start: ") +
       std::to_wstring(gCountingCheck.lastRelative);
-  text += UiText(L"（无事件时为 0）。连续滚动按一次手势计数。", L" (0 if none). Continuous scrolling counts as one gesture.");
+  text += UiText(L"（无事件时为 0）。滚动按距离累计，每 120 增量计 1 次；单次手势最多 30 次。", L" (0 if none). Scrolling counts by distance: one tick per 120 delta, at most 30 per gesture.");
   text += UiText(L"\r\n\r\n键盘监听句柄：", L"\r\n\r\nKeyboard listener handle: ");
   text += KeyboardListenerAvailable() ? UiText(L"已建立", L"created") : UiText(L"未建立", L"unavailable");
   text += UiText(L"；鼠标监听句柄：", L"; mouse listener handle: ");
@@ -3265,7 +3352,7 @@ bool ShowPrivacyNotice(HWND owner) {
           L"2. Right-click it to change appearance, view the calendar, or quit.\n"
           L"3. Windows normally needs no extra permission. Open About for Windows permissions and counting help.\n\n"
           L"NiuMa Merit counts only keyboard presses, mouse button presses, "
-          L"and scroll gestures.\n\nIt does not read, save, or upload key content, "
+          L"and scroll distance.\n\nIt does not read, save, or upload key content, "
           L"mouse positions, the current app, clipboard data, or screen content. "
           L"The app has no network features."),
       UiText(L"先记住三件事", L"Three Things to Get Started"), MB_OK | MB_ICONINFORMATION) == IDOK;
@@ -3755,7 +3842,7 @@ void ShowAboutDialog(HWND owner) {
         L"鼠标位置或窗口信息。\n本软件不包含网络请求、"
         L"遥测或自动更新。\n\n官方网站：\n"
       : L"NiuMa Merit v" + version + L"\n\n"
-        L"Counts keyboard presses, mouse button presses, and scroll gestures without "
+        L"Counts keyboard presses, mouse button presses, and scroll distance without "
         L"reading specific content, mouse positions, or window information.\n"
         L"The app contains no network requests, "
         L"telemetry, or automatic updates."
@@ -5087,6 +5174,16 @@ void PrepareClientClose(HWND window) {
   CancelAppearanceRequests();
   // Collect the final complete ledger while both owners and the notification
   // HWND still exist. No more inputs may race the last saved snapshot.
+  // Best-effort final curve capture for F4 before the input owner stops.
+  if (gInput.service && !gInput.finalCollected) {
+    input_core::LedgerSnapshotResult ledger;
+    try {
+      if (gInput.service->TryConsumeLedger(ledger) &&
+          ledger.header.status == input_core::LedgerResultStatus::Complete)
+        ApplyCurveFromLedger(ledger.curve);
+    } catch (...) {
+    }
+  }
   StopInputService();
   RefreshOffwork(true, true);
   gOffwork.suspended = true;
@@ -5095,6 +5192,7 @@ void PrepareClientClose(HWND window) {
   KillTimer(window, kAnimationTimer); gState.timerRunning = false; gState.striking = false;
   if (gReminderWindow) DestroyWindow(gReminderWindow);
   SaveState();
+  PumpMetrics();  // Flush any pending F4 curve data before close.
   PumpDataStorage(true);
 }
 
@@ -5266,6 +5364,19 @@ LRESULT CALLBACK WindowProcedure(
         }
         ConsumeInputSnapshot();  // Also recovers a failed coalesced PostMessage.
         PumpDataStorage();  // Recover a failed storage timer without synchronous IO.
+        // F4 heartbeat: every 60s tell the input owner to mark the current
+        // bucket observed (true-zero coverage) even if no counts landed here.
+        if (gInput.authoritative && gInput.service &&
+            GetTickCount64() - gLastCurveHeartbeatMs >= 60000) {
+          gLastCurveHeartbeatMs = GetTickCount64();
+          const auto stamp = input_runtime::InputService::CaptureLocalStamp();
+          input_runtime::InputCommand command;
+          command.kind = input_runtime::InputCommandKind::MarkCurveObserved;
+          command.capturedDate = stamp.date;
+          command.minuteOfDay = stamp.minuteOfDay;
+          SendInputCommand(command);
+        }
+        PumpMetrics();
         const ULONGLONG now = GetTickCount64();
         const auto nowUtc = static_cast<std::int64_t>(std::time(nullptr));
         const auto clockTransition = gState.reminderClockGuard.Observe(nowUtc, now);
@@ -5702,6 +5813,7 @@ int WINAPI wWinMain(
   }
   gState.dpi = SystemDpi();
   LoadOffworkSettings();
+  InitializeMetrics();  // F4 sidecar: degrade-only, never blocks startup.
   if (gDataStorage.model) gVisibility.autoHideFullscreen = gDataStorage.model->current().autoHideFullscreen;
   gState.windowWidth = ScaleDip(kWindowDipWidth, gState.dpi);
   gState.windowHeight = ScaleDip(MainWindowDipHeight(), gState.dpi);
