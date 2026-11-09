@@ -4637,32 +4637,75 @@ static NSString *NMMedalIcon(int tier) {
   NSAlert *alert = [[NMUiAlert alloc] init];
   alert.messageText = UiText(@"牛马电子功德", @"NiuMa Merit");
   NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"?";
-  NSString *aboutText = [NSString stringWithFormat:UiText(
-      @"版本 %@\n\n"
-       @"只统计按键、鼠标按键和滚轮手势发生的次数，不读取输入内容或鼠标位置。全屏隐身仅判断窗口是否覆盖屏幕，不保存应用或窗口信息。\n"
-       @"本软件不包含网络请求、遥测或自动更新。\n\n"
-       @"在其他应用中计数，需要允许本应用使用“输入监控”。\n"
-       @"如仍未正常计数，可联系开发者或扫码进粉丝群寻求帮助。\n"
-       @"Mac 权限与计数帮助\n\n"
-       @"官方网站：\n"
-       @"https://gongde.zqscreen.cn/\n\n"
-       @"扫码进粉丝群，免费领取权益包。\n"
-       @"和我一起学习 AI，创建并上架你的专属形象包。\n"
-       @"抖音号：1872941388",
-      @"Version %@\n\n"
-       @"Counts keyboard presses, mouse button presses, and scroll gestures. It does not read "
-       @"typed content or mouse positions. Fullscreen hiding checks window coverage without saving app or window information.\n"
-       @"The app contains no network requests, telemetry, or automatic updates.\n\n"
-       @"Counting in other apps requires Input Monitoring permission.\n"
-       @"If input is still not being counted, contact the developer or scan the Douyin code to join the fan group for help.\n"
-       @"Mac permissions and counting help\n\n"
-       @"Official website:\n"
-       @"https://gongde.zqscreen.cn/\n\n"
-       @"Scan with Douyin to join the fan group and claim free benefit packs.\n"
-       @"Learn AI with me, and create and publish your own appearance packs.\n"
-       @"Douyin ID: 1872941388"), version];
+  // FB3：按 UI 语言分流。zh-Hans（大陆）保留原内容（抖音、群码、ICP 等）；
+  // zh-Hant / ja / en（海外）去掉抖音/群码/ICP，改为官网、Paddle 购买说明、
+  // 支持邮箱、开源仓库、X（Twitter）账号。不放版本历史。
+  const BOOL mainland = (NMCurrentUiLanguage() == NMUiLanguageSimplifiedChinese);
+
+  NSString *aboutText = nil;
+  if (mainland) {
+    aboutText = [NSString stringWithFormat:UiText(
+        @"版本 %@\n\n"
+         @"只统计按键、鼠标按键和滚轮手势发生的次数，不读取输入内容或鼠标位置。全屏隐身仅判断窗口是否覆盖屏幕，不保存应用或窗口信息。\n"
+         @"本软件不包含网络请求、遥测或自动更新。\n\n"
+         @"在其他应用中计数，需要允许本应用使用“输入监控”。\n"
+         @"如仍未正常计数，可联系开发者或扫码进粉丝群寻求帮助。\n"
+         @"Mac 权限与计数帮助\n\n"
+         @"官方网站：\n"
+         @"https://gongde.zqscreen.cn/\n\n"
+         @"扫码进粉丝群，免费领取权益包。\n"
+         @"和我一起学习 AI，创建并上架你的专属形象包。\n"
+         @"抖音号：1872941388",
+        @"Version %@\n\n"
+         @"Counts keyboard presses, mouse button presses, and scroll gestures. It does not read "
+         @"typed content or mouse positions. Fullscreen hiding checks window coverage without saving app or window information.\n"
+         @"The app contains no network requests, telemetry, or automatic updates.\n\n"
+         @"Counting in other apps requires Input Monitoring permission.\n"
+         @"If input is still not being counted, contact the developer or scan the Douyin code to join the fan group for help.\n"
+         @"Mac permissions and counting help\n\n"
+         @"Official website:\n"
+         @"https://gongde.zqscreen.cn/\n\n"
+         @"Scan with Douyin to join the fan group and claim free benefit packs.\n"
+         @"Learn AI with me, and create and publish your own appearance packs.\n"
+         @"Douyin ID: 1872941388"), version];
+  } else {
+    aboutText = [NSString stringWithFormat:UiText(
+        @"版本 %@\n\n"
+         @"只统计按键、鼠标按键和滚轮手势发生的次数，不读取输入内容或鼠标位置。全屏隐身仅判断窗口是否覆盖屏幕，不保存应用或窗口信息。\n"
+         @"本软件不包含网络请求、遥测或自动更新。\n\n"
+         @"在其他应用中计数，需要允许本应用使用“输入监控”。\n"
+         @"如仍未正常计数，可联系支持邮箱寻求帮助。\n"
+         @"Mac 权限与计数帮助\n\n"
+         @"官方网站：\n"
+         @"https://gongde.zqscreen.cn/\n\n"
+         @"购买与授权：\n"
+         @"本软件通过 Paddle 提供购买与授权（Paddle 为我们的授权与收款服务商）。\n\n"
+         @"支持邮箱：\n"
+         @"f104783@outlook.com\n\n"
+         @"开源仓库：\n"
+         @"https://github.com/shanqiuwong/niuma-merit\n\n"
+         @"X：@Shanqiuwong",
+        @"Version %@\n\n"
+         @"Counts keyboard presses, mouse button presses, and scroll gestures. It does not read "
+         @"typed content or mouse positions. Fullscreen hiding checks window coverage without saving app or window information.\n"
+         @"The app contains no network requests, telemetry, or automatic updates.\n\n"
+         @"Counting in other apps requires Input Monitoring permission.\n"
+         @"If input is still not being counted, contact our support email for help.\n"
+         @"Mac permissions and counting help\n\n"
+         @"Official website:\n"
+         @"https://gongde.zqscreen.cn/\n\n"
+         @"Purchase & licensing:\n"
+         @"This app is sold and licensed through Paddle (our payment and licensing provider).\n\n"
+         @"Support email:\n"
+         @"f104783@outlook.com\n\n"
+         @"Open-source repository:\n"
+         @"https://github.com/shanqiuwong/niuma-merit\n\n"
+         @"X: @Shanqiuwong"), version];
+  }
+
   NSString *douyinPath = [NSBundle.mainBundle pathForResource:@"developer-douyin" ofType:@"png"];
-  NSImage *douyinImage = douyinPath ? [[NSImage alloc] initWithContentsOfFile:douyinPath] : nil;
+  NSImage *douyinImage = mainland && douyinPath
+      ? [[NSImage alloc] initWithContentsOfFile:douyinPath] : nil;
   NSScreen *screen = NSScreen.mainScreen ?: NSScreen.screens.firstObject;
   NSRect visibleFrame = screen ? screen.visibleFrame : NSMakeRect(0, 0, 800, 600);
   CGFloat scrollerWidth = [NSScroller scrollerWidthForControlSize:NSControlSizeRegular
@@ -4679,14 +4722,32 @@ static NSString *NMMedalIcon(int tier) {
         NSForegroundColorAttributeName: NSColor.linkColor,
         NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle)} range:helpRange];
   }
-  NSRange promoRange = [aboutText rangeOfString:UiText(
-      @"扫码进粉丝群，免费领取权益包。",
-      @"Scan with Douyin to join the fan group and claim free benefit packs.")];
-  if (promoRange.location != NSNotFound) {
-    NSMutableParagraphStyle *promoStyle = [[NSMutableParagraphStyle alloc] init];
-    promoStyle.alignment = NSTextAlignmentCenter;
-    [bodyText addAttribute:NSParagraphStyleAttributeName value:promoStyle
-        range:NSMakeRange(promoRange.location, aboutText.length - promoRange.location)];
+  if (mainland) {
+    NSRange promoRange = [aboutText rangeOfString:UiText(
+        @"扫码进粉丝群，免费领取权益包。",
+        @"Scan with Douyin to join the fan group and claim free benefit packs.")];
+    if (promoRange.location != NSNotFound) {
+      NSMutableParagraphStyle *promoStyle = [[NSMutableParagraphStyle alloc] init];
+      promoStyle.alignment = NSTextAlignmentCenter;
+      [bodyText addAttribute:NSParagraphStyleAttributeName value:promoStyle
+          range:NSMakeRange(promoRange.location, aboutText.length - promoRange.location)];
+    }
+  } else {
+    // 海外：官网、支持邮箱、开源仓库、X 账号均可点击（NSWorkspace openURL）。
+    NSArray<NSArray<NSString *> *> *links = @[
+      @[ @"https://gongde.zqscreen.cn/", @"https://gongde.zqscreen.cn/" ],
+      @[ @"f104783@outlook.com", @"mailto:f104783@outlook.com" ],
+      @[ @"https://github.com/shanqiuwong/niuma-merit", @"https://github.com/shanqiuwong/niuma-merit" ],
+      @[ @"X：@Shanqiuwong", @"https://x.com/shanqiuwong" ],
+    ];
+    for (NSArray<NSString *> *pair in links) {
+      NSRange r = [aboutText rangeOfString:pair[0]];
+      if (r.location == NSNotFound) continue;
+      [bodyText addAttributes:@{
+          NSLinkAttributeName: pair[1],
+          NSForegroundColorAttributeName: NSColor.linkColor,
+          NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle)} range:r];
+    }
   }
   CGFloat textHeight = ceil([bodyText boundingRectWithSize:NSMakeSize(contentWidth, CGFLOAT_MAX)
       options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading].size.height) + 4.0;
