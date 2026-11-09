@@ -1646,7 +1646,7 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   // 分享卡仍按契约 §9 的 amount_display（exponent 位小数）写，不受 5 位展示影响。
   self.encouragerShareAmount = [NSString stringWithUTF8String:
       niuma::encourager::FormatAmountMinor(status.earned_minor, exponent, symbol).c_str()];
-  self.encouragerDisplayLabel = UiText(@"今日已赚", @"Earned today");
+  self.encouragerDisplayLabel = UiText(@"今日工钱", @"Today's earnings");
   self.encouragerProgress = status.progress;
   if (!self.appearanceHidden) [self.view setNeedsDisplay:YES];
 }
@@ -1749,8 +1749,8 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
     [content addSubview:self.encouragerEndMinuteControl];
 
     NSTextField *explanation = [NSTextField wrappingLabelWithString:UiText(
-        @"显示「今日已赚」与今日上班进度条：时段内按墙钟每秒累计，到止点等于日薪；时段外暂停，每日零点归零，周末同样生效。跨午夜时段本期不支持。金额仅本地保存与展示，不写入日志、分享卡或网络。",
-        @"Shows “Earned today” and a work-progress bar: accrues by the wall clock within the window, reaching the daily wage at the end; pauses outside it, resets at midnight, and applies on weekends too. Overnight windows are not supported yet. Amounts stay local and are never logged, shared, or sent.")];
+        @"显示「今日工钱」与今日上班进度条：时段内按墙钟每秒累计，到止点等于日薪；时段外暂停，每日零点归零，周末同样生效。跨午夜时段本期不支持。金额仅本地保存与展示，不写入日志、分享卡或网络。",
+        @"Shows “Today's earnings” and a work-progress bar: accrues by the wall clock within the window, reaching the daily wage at the end; pauses outside it, resets at midnight, and applies on weekends too. Overnight windows are not supported yet. Amounts stay local and are never logged, shared, or sent.")];
     explanation.frame = NSMakeRect(24, 92, 422, 92);
     explanation.font = [NSFont systemFontOfSize:12];
     explanation.textColor = NMUiMuted();

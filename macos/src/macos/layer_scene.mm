@@ -16,6 +16,7 @@
 @property(nonatomic) BOOL rollEnabled;  // FB2：数字变化时末位做轻微上下滚动
 - (BOOL)updateText:(NSString *)text size:(CGFloat)size color:(NSColor *)color;
 - (void)rollLastDigitIfChangedFrom:(NSString *)oldText to:(NSString *)newText;
+- (void)ensureGlyph:(NSString *)glyph;
 @end
 @implementation NMNumberLayer
 - (BOOL)updateText:(NSString *)text size:(CGFloat)size color:(NSColor *)color {
@@ -26,29 +27,18 @@
   if(rebuild) {
     self.glyphs=[NSMutableDictionary dictionary];self.advances=[NSMutableDictionary dictionary];
     self.atlasSize=size;self.atlasScale=scale;self.atlasColor=color;
-    NSFont *font=[NSFont monospacedDigitSystemFontOfSize:size weight:NSFontWeightRegular];
-    NSShadow *shadow=[NSShadow new];shadow.shadowColor=[NSColor colorWithWhite:0 alpha:.8];
-    shadow.shadowOffset=NSMakeSize(0,-1);shadow.shadowBlurRadius=2;
-    NSDictionary *attributes=@{NSFontAttributeName:font,NSForegroundColorAttributeName:color,
-      NSStrokeColorAttributeName:[NSColor colorWithWhite:0 alpha:.7],NSStrokeWidthAttributeName:@(-2.5),NSShadowAttributeName:shadow};
-    for(NSUInteger i=0;i<12;i++) {
-      NSString *glyph=[@"0123456789:-" substringWithRange:NSMakeRange(i,1)];
-      CGFloat advance=[glyph sizeWithAttributes:@{NSFontAttributeName:font}].width;
-      NSInteger width=(NSInteger)ceil((advance+8)*scale),height=(NSInteger)ceil(40*scale);
-      NSBitmapImageRep *rep=[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:width pixelsHigh:height
-        bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bitmapFormat:0 bytesPerRow:width*4 bitsPerPixel:32];
-      NSGraphicsContext *context=[NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
-      [NSGraphicsContext saveGraphicsState];NSGraphicsContext.currentContext=context;
-      CGContextScaleCTM(context.CGContext,scale,scale);
-      [glyph drawAtPoint:NSMakePoint(4,40-font.ascender+font.descender-2) withAttributes:attributes];
-      [NSGraphicsContext restoreGraphicsState];
-      self.glyphs[glyph]=(__bridge id)rep.CGImage;self.advances[glyph]=@(advance);
-    }
   }
   if(!self.digits) self.digits=[NSMutableArray array];
   while(self.digits.count<text.length) { CALayer *digit=[CALayer layer];[self addSublayer:digit];[self.digits addObject:digit]; }
   while(self.digits.count>text.length) { [self.digits.lastObject removeFromSuperlayer];[self.digits removeLastObject]; }
-  CGFloat total=0;for(NSUInteger i=0;i<text.length;i++)total+=[self.advances[[text substringWithRange:NSMakeRange(i,1)]] doubleValue];
+  // FB5：按需为每个字符（数字、':'、'-'、货币符号、'.'、',' 等）生成字形，
+  // 以便「今日工钱」金额能显示币种符号与小数点，而不是只剩数字。
+  CGFloat total=0;
+  for(NSUInteger i=0;i<text.length;i++) {
+    NSString *g=[text substringWithRange:NSMakeRange(i,1)];
+    [self ensureGlyph:g];
+    total+=[self.advances[g] doubleValue];
+  }
   BOOL layout=rebuild || self.text.length!=text.length || !CGSizeEqualToSize(self.layoutSize,self.bounds.size) || self.textWidth!=total;
   self.layoutSize=self.bounds.size;self.textWidth=total;
   CGFloat x=(self.bounds.size.width-total)/2;
@@ -60,6 +50,28 @@
     x+=advance;
   }
   self.text=[text copy];return YES;
+}
+
+// 为单个字符按当前字号/缩放/颜色生成并缓存字形位图（按需构建，支持任意字符）。
+- (void)ensureGlyph:(NSString *)glyph {
+  if(!glyph.length || self.glyphs[glyph]) return;
+  const CGFloat scale=MAX(1,self.atlasScale);
+  NSFont *font=[NSFont monospacedDigitSystemFontOfSize:self.atlasSize weight:NSFontWeightRegular];
+  NSShadow *shadow=[NSShadow new];shadow.shadowColor=[NSColor colorWithWhite:0 alpha:.8];
+  shadow.shadowOffset=NSMakeSize(0,-1);shadow.shadowBlurRadius=2;
+  NSDictionary *attributes=@{NSFontAttributeName:font,NSForegroundColorAttributeName:self.atlasColor,
+    NSStrokeColorAttributeName:[NSColor colorWithWhite:0 alpha:.7],NSStrokeWidthAttributeName:@(-2.5),NSShadowAttributeName:shadow};
+  CGFloat advance=[glyph sizeWithAttributes:@{NSFontAttributeName:font}].width;
+  NSInteger width=(NSInteger)ceil((advance+8)*scale),height=(NSInteger)ceil(40*scale);
+  if(width<1) width=1;
+  NSBitmapImageRep *rep=[[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:width pixelsHigh:height
+    bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace bitmapFormat:0 bytesPerRow:width*4 bitsPerPixel:32];
+  NSGraphicsContext *context=[NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+  [NSGraphicsContext saveGraphicsState];NSGraphicsContext.currentContext=context;
+  CGContextScaleCTM(context.CGContext,scale,scale);
+  [glyph drawAtPoint:NSMakePoint(4,40-font.ascender+font.descender-2) withAttributes:attributes];
+  [NSGraphicsContext restoreGraphicsState];
+  self.glyphs[glyph]=(__bridge id)rep.CGImage;self.advances[glyph]=@(advance);
 }
 
 // FB2：末位数字变化时做一次轻微上下滚动 + 淡入（Core Animation，无第三方库）。
