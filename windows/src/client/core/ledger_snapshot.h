@@ -29,12 +29,14 @@ struct LedgerSnapshotHeader {
   LedgerRequest request;
   InputSnapshot input;
   std::size_t dailyCount = 0;
+  std::size_t curveCount = 0;
   LedgerResultStatus status = LedgerResultStatus::CoreUnavailable;
 };
 
 struct LedgerSnapshotResult {
   LedgerSnapshotHeader header;
   std::vector<DailyTotal> daily;
+  std::vector<CurveDayRecord> curve;
 };
 
 // One input owner produces; one consumer requests, copies, and releases. The
@@ -47,7 +49,9 @@ class LedgerSnapshotChannel {
                 "The input owner must not wait on a consumer lock");
 
  public:
-  explicit LedgerSnapshotChannel(std::size_t capacity) : buffer_(CheckedCapacity(capacity)) {}
+  explicit LedgerSnapshotChannel(std::size_t capacity)
+      : buffer_(CheckedCapacity(capacity)),
+        curveBuffer_(CheckedCurveCapacity(InputCore::kCurveDayCapacity)) {}
   LedgerSnapshotChannel(const LedgerSnapshotChannel&) = delete;
   LedgerSnapshotChannel& operator=(const LedgerSnapshotChannel&) = delete;
 
@@ -83,8 +87,11 @@ class LedgerSnapshotChannel {
       header_.status = LedgerResultStatus::EpochMismatch;
     } else if (core.daily_size() > buffer_.size()) {
       header_.status = LedgerResultStatus::CapacityMismatch;
+    } else if (core.curve_size() > curveBuffer_.size()) {
+      header_.status = LedgerResultStatus::CapacityMismatch;
     } else {
       header_.dailyCount = core.CopyDailyTotals(buffer_.data(), buffer_.size());
+      header_.curveCount = core.CopyCurveDays(curveBuffer_.data(), curveBuffer_.size());
       header_.status = LedgerResultStatus::Complete;
     }
     state_.store(LedgerSlotState::Ready, std::memory_order_release);
@@ -96,6 +103,7 @@ class LedgerSnapshotChannel {
   bool TryConsume(LedgerSnapshotResult& output) {
     if (state_.load(std::memory_order_acquire) != LedgerSlotState::Ready) return false;
     output.daily.assign(buffer_.begin(), buffer_.begin() + header_.dailyCount);
+    output.curve.assign(curveBuffer_.begin(), curveBuffer_.begin() + header_.curveCount);
     output.header = header_;
     state_.store(closed_.load(std::memory_order_acquire) ? LedgerSlotState::Closed
                                                       : LedgerSlotState::Free,
@@ -130,8 +138,14 @@ class LedgerSnapshotChannel {
       throw std::invalid_argument("Ledger snapshot capacity is outside its supported range");
     return capacity;
   }
+  static std::size_t CheckedCurveCapacity(std::size_t capacity) {
+    if (!capacity || capacity > InputCore::kCurveDayCapacity)
+      throw std::invalid_argument("Ledger curve capacity is outside its supported range");
+    return capacity;
+  }
 
   std::vector<DailyTotal> buffer_;
+  std::vector<CurveDayRecord> curveBuffer_;
   LedgerRequest request_;
   LedgerSnapshotHeader header_;
   std::atomic<LedgerSlotState> state_{LedgerSlotState::Free};

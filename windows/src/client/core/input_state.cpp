@@ -75,12 +75,73 @@ std::size_t InputCore::EnsureDate(LocalDate date) noexcept {
   return kMissing;
 }
 
+// ---- F4 curve ring (owner only) ----
+
+void InputCore::ClearCurveDays() noexcept {
+  curveHead_ = 0;
+  curveCount_ = 0;
+  for (auto& record : curve_) record = CurveDayRecord{};
+}
+
+std::size_t InputCore::FindCurveDay(LocalDate date) const noexcept {
+  for (std::size_t i = 0; i < curveCount_; ++i) {
+    const std::size_t slot = (curveHead_ + i) % kCurveDayCapacity;
+    if (curve_[slot].date == date) return slot;
+  }
+  return kMissing;
+}
+
+std::size_t InputCore::EnsureCurveDay(LocalDate date) noexcept {
+  const std::size_t existing = FindCurveDay(date);
+  if (existing != kMissing) return existing;
+  std::size_t slot;
+  if (curveCount_ < kCurveDayCapacity) {
+    slot = (curveHead_ + curveCount_) % kCurveDayCapacity;
+    ++curveCount_;
+  } else {
+    // Ring full: evict the oldest day in place.
+    slot = curveHead_;
+    curveHead_ = (curveHead_ + 1) % kCurveDayCapacity;
+  }
+  curve_[slot] = CurveDayRecord{};
+  curve_[slot].date = date;
+  return slot;
+}
+
+bool InputCore::MarkCurveObserved(LocalDate date, int minuteOfDay) noexcept {
+  if (!ValidDate(date) || minuteOfDay < 0 || minuteOfDay >= 24 * 60) return false;
+  const auto slot = EnsureCurveDay(date);
+  curve_[slot].day.MarkObserved(niuma::curve::BucketForMinute(minuteOfDay));
+  return true;
+}
+
+std::size_t InputCore::CopyCurveDays(CurveDayRecord* output,
+                                     std::size_t capacity) const noexcept {
+  std::size_t required = 0;
+  for (std::size_t i = 0; i < curveCount_; ++i) {
+    const auto& record = curve_[(curveHead_ + i) % kCurveDayCapacity];
+    if (record.date == 0) continue;
+    if (record.day.coverage.AllZero() && record.day.CoveredSum() == 0) continue;
+    ++required;
+  }
+  if (!output || capacity < required) return required;
+  std::size_t index = 0;
+  for (std::size_t i = 0; i < curveCount_; ++i) {
+    const auto& record = curve_[(curveHead_ + i) % kCurveDayCapacity];
+    if (record.date == 0) continue;
+    if (record.day.coverage.AllZero() && record.day.CoveredSum() == 0) continue;
+    output[index++] = record;
+  }
+  return required;
+}
+
 bool InputCore::Initialize(std::uint64_t total, LocalDate currentDate,
                            const DailyTotal* daily, std::size_t dailyCount,
                            bool reminderSegmentConsumed) noexcept {
   std::fill(days_.begin(), days_.end(), DailyTotal{});
   dayCount_ = 0;
   currentDaySlot_ = kMissing;
+  ClearCurveDays();
   view_ = {};
   view_.fault = InputFault::InvalidInitialState;
   reminder_ = {};
@@ -145,7 +206,7 @@ bool InputCore::UpdateDate(LocalDate date) noexcept {
 }
 
 ObserveResult InputCore::Count(std::uint64_t monotonicMs, LocalDate date,
-                               int operations) noexcept {
+                               int operations, int minuteOfDay) noexcept {
   if (operations < 0) operations = 0;
   if (!UpdateDate(date)) {
     const std::uint64_t missing = static_cast<std::uint64_t>(operations);
@@ -155,6 +216,15 @@ ObserveResult InputCore::Count(std::uint64_t monotonicMs, LocalDate date,
             : view_.unaccountedOperations + missing;
     return ObserveResult::AccountingUnavailable;
   }
+  // F4: bucket for the event's captured minute. -1 means "not applicable"
+  // (e.g. lifecycle callers); such events still count toward total/today but
+  // contribute no bucket and leave coverage untouched.
+  const int bucket =
+      (minuteOfDay >= 0 && minuteOfDay < 24 * 60)
+          ? niuma::curve::BucketForMinute(minuteOfDay)
+          : -1;
+  std::size_t curveSlot = kMissing;
+  if (bucket >= 0) curveSlot = EnsureCurveDay(date);
   int counted = 0;
   while (counted < operations) {
     constexpr auto limit = std::numeric_limits<std::uint64_t>::max();
@@ -166,6 +236,9 @@ ObserveResult InputCore::Count(std::uint64_t monotonicMs, LocalDate date,
     ++view_.total;
     ++view_.today;
     ++days_[currentDaySlot_].total;
+    if (bucket >= 0 && curveSlot != kMissing) {
+      curve_[curveSlot].day.AddCount(bucket, 1);
+    }
     Increment(view_.countedOperations);
   }
   // Tempo/strike accounting: one tempo update and at most one new visible
@@ -225,6 +298,7 @@ ObserveResult InputCore::Observe(const InputEvent& event) noexcept {
     reminder_.Observe(activity, event.monotonicMs);
   }
   if (event.kind == InputKind::KeyUp) return ObserveResult::Ignored;
+  int operations = 1;
   if (event.kind == InputKind::Scroll) {
     // F0: the caller converts wheel delta into ticks; a non-positive tick
     // count means this physical event produced no whole merit unit (sub-tick
@@ -233,8 +307,9 @@ ObserveResult InputCore::Observe(const InputEvent& event) noexcept {
     hasScrollTime_ = true;
     view_.lastScrollMs = event.monotonicMs;
     if (event.scrollTicks <= 0) return ObserveResult::Ignored;
+    operations = event.scrollTicks;
   }
-  return Count(event.monotonicMs, event.date, event.scrollTicks);
+  return Count(event.monotonicMs, event.date, operations, event.minuteOfDay);
 }
 
 bool InputCore::StartsScrollGesture(std::uint64_t monotonicMs) const noexcept {

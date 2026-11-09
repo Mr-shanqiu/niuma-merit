@@ -49,10 +49,15 @@ if [ "${NIUMA_TEST_SANITIZE:-0}" = "1" ]; then
 fi
 
 status=0
-for name in work_encourager merit_curve medals scroll_tick_counter metrics_json metrics_store; do
+for name in work_encourager merit_curve medals scroll_tick_counter metrics_json metrics_store input_state; do
   printf '== %s ==\n' "$name"
+  # input_state 有 .cpp 实现（InputCore 非纯 header），需一并编译。
+  extra=""
+  if [ "$name" = "input_state" ]; then
+    extra="$include/input_state.cpp"
+  fi
   # shellcheck disable=SC2086
-  if ! "$cxx" $cxxflags -I"$include" "$here/${name}_test.cpp" -o "$work/$name"; then
+  if ! "$cxx" $cxxflags -I"$include" "$here/${name}_test.cpp" $extra -o "$work/$name"; then
     status=1
     continue
   fi
