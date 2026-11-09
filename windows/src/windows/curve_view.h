@@ -35,15 +35,14 @@ struct CurveViewData {
   int year = 1970;
   int month = 1;
   int day = 1;
-  std::string todayKey;                 // "YYYY-MM-DD"
+  std::wstring todayKey;                // "YYYY-MM-DD"
   std::uint64_t todayTotal = 0;         // 旧 [daily] 今日总数（仅日视图展示用）
   // 日视图：96 桶 + 覆盖位图（coverage[i] 为 true 表示已采集）。
   std::vector<std::uint64_t> dayBuckets;  // 恰好 96 项（空表示今日尚未采集）
   std::vector<bool> dayCoverage;          // 恰好 96 项
   bool dayPartial = false;                // 升级当天部分采集（日总 > 桶和）
   // 周/月视图：每日总（按 keys 顺序）。
-  std::vector<std::string> rangeKeys;     // "YYYY-MM-DD"
-  std::vector<std::string> rangeLabels;   // 显示标签（周：一..日；月：1..31）
+  std::vector<std::wstring> rangeLabels;  // 显示标签（周：一..日；月：1..31）
   std::vector<std::uint64_t> rangeValues;
 };
 

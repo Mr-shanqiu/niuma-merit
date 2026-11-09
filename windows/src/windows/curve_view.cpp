@@ -1,9 +1,9 @@
 // F4 · 牛马曲线窗口实现（GDI+ 绘制 + WIC PNG 导出）。
 #include "curve_view.h"
 
-#include "ui_theme.h"
-
 #include <gdiplus.h>
+
+#include "ui_theme.h"
 #include <wincodec.h>
 
 #include <algorithm>
@@ -69,8 +69,6 @@ void DrawText(Gdiplus::Graphics& graphics, const std::wstring& text,
   graphics.DrawString(text.c_str(), -1, &font, rect, &format, &brush);
 }
 
-std::wstring Wide(const std::string& s) { return std::wstring(s.begin(), s.end()); }
-
 std::wstring Number(std::uint64_t value) {
   auto text = std::to_wstring(value);
   for (int i = static_cast<int>(text.size()) - 3; i > 0; i -= 3)
@@ -96,7 +94,7 @@ void PaintCurve(Gdiplus::Graphics& graphics, const CurveViewData& data, bool chi
   std::wstring title;
   wchar_t buffer[128] = {};
   if (data.mode == CurveViewMode::Day) {
-    swprintf_s(buffer, std::size(buffer), chinese ? zhDay : enDay, Wide(data.todayKey).c_str());
+    swprintf_s(buffer, std::size(buffer), chinese ? zhDay : enDay, data.todayKey.c_str());
     title = buffer;
   } else if (data.mode == CurveViewMode::Week) {
     title = chinese ? zhWeek : enWeek;
@@ -189,7 +187,7 @@ void PaintCurve(Gdiplus::Graphics& graphics, const CurveViewData& data, bool chi
     Gdiplus::SolidBrush bar(i == 0 ? blue : accent);
     graphics.FillRectangle(&bar, cx - barWidth / 2, plot.GetBottom() - h, barWidth, h);
     const std::wstring label =
-        i < data.rangeLabels.size() ? Wide(data.rangeLabels[i]) : std::to_wstring(i + 1);
+        i < data.rangeLabels.size() ? data.rangeLabels[i] : std::to_wstring(i + 1);
     const float lw = count > 20 ? 20.0f : 40.0f;
     DrawText(graphics, label,
              Gdiplus::RectF(cx - lw / 2, plot.GetBottom() + 6, lw, 16), labelSize, muted,
@@ -410,8 +408,8 @@ bool ExportCurvePng(HWND owner, const CurveViewData& data, const std::wstring& s
              Gdiplus::RectF(48, 40, imageWidth - 96, 44), 30, ink, true);
     std::wstring subtitle;
     if (data.mode == CurveViewMode::Day)
-      subtitle = chinese ? (L"今日 96 桶 · " + Wide(data.todayKey))
-                         : (L"Today, 96 buckets · " + Wide(data.todayKey));
+      subtitle = chinese ? (L"今日 96 桶 · " + data.todayKey)
+                         : (L"Today, 96 buckets · " + data.todayKey);
     else if (data.mode == CurveViewMode::Week)
       subtitle = chinese ? L"本周每日功德（周一–周日）" : L"Daily merit this week (Mon–Sun)";
     else {

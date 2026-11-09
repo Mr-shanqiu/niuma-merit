@@ -263,6 +263,7 @@ bool gVisibilityHidden = false;
 NOTIFYICONDATAW gTray{};
 HWND gLastFullscreenWindow = nullptr;
 void ShowContextMenu(HWND window, POINT screenPoint);void RenderLayeredWindow(ULONGLONG now);
+SYSTEMTIME CalendarToday();
 void ApplyWindowVisibility();
 void RefreshFullscreenVisibility();
 
@@ -1631,12 +1632,13 @@ niuma::windows::window::CurveViewData BuildCurveData(niuma::windows::window::Cur
   data.month = today.wMonth;
   data.day = today.wDay;
   const std::wstring todayKeyW = DateKey(today);
-  data.todayKey = std::string(todayKeyW.begin(), todayKeyW.end());
+  data.todayKey = todayKeyW;
   data.todayTotal = ReadDailyTotal(todayKeyW);
+  const std::string todayNarrow(todayKeyW.begin(), todayKeyW.end());
   if (mode == CurveViewMode::Day) {
     std::vector<std::uint64_t> buckets;
     std::vector<bool> coverage;
-    if (CurveDayForDisplay(data.todayKey, &buckets, &coverage)) {
+    if (CurveDayForDisplay(todayNarrow, &buckets, &coverage)) {
       data.dayBuckets = std::move(buckets);
       data.dayCoverage = std::move(coverage);
       std::uint64_t coveredSum = 0;
@@ -1651,13 +1653,12 @@ niuma::windows::window::CurveViewData BuildCurveData(niuma::windows::window::Cur
     keys = niuma::curve::WeekDayKeys(today.wYear, today.wMonth, today.wDay);
     const wchar_t* zh[] = {L"一", L"二", L"三", L"四", L"五", L"六", L"日"};
     const wchar_t* en[] = {L"Mon", L"Tue", L"Wed", L"Thu", L"Fri", L"Sat", L"Sun"};
-    for (int i = 0; i < 7; ++i) data.rangeLabels.push_back(
-        std::string(IsChineseUi() ? zh[i] : en[i]));
+    for (int i = 0; i < 7; ++i) data.rangeLabels.emplace_back(IsChineseUi() ? zh[i] : en[i]);
   } else {
     keys = niuma::curve::MonthDayKeys(today.wYear, today.wMonth);
-    for (std::size_t i = 0; i < keys.size(); ++i) data.rangeLabels.push_back(std::to_string(i + 1));
+    for (std::size_t i = 0; i < keys.size(); ++i)
+      data.rangeLabels.push_back(std::to_wstring(i + 1));
   }
-  data.rangeKeys = keys;
   for (const std::string& key : keys) {
     const std::wstring wide = WideFromUtf8(key);
     data.rangeValues.push_back(ReadDailyTotal(wide));
