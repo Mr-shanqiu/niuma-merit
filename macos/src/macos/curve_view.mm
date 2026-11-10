@@ -97,6 +97,14 @@ static void NMCurveDrawText(NSString *text, NSRect rect, CGFloat size, NSColor *
       if (h < (value > 0 ? 2 : 0)) h = value > 0 ? 2 : 0;
       [(i >= 36 && i < 54 ? blue : accent) setFill];
       NSRectFill(NSMakeRect(cell.origin.x, NSMaxY(plot) - h, cell.size.width, h));
+      // FB16：非零时段在柱顶显示该时段功德数，便于直读每个时段。
+      if (value > 0) {
+        NSString *vtext = [numbers stringFromNumber:@(value)];
+        CGFloat lx = cell.origin.x + cell.size.width / 2.0;
+        CGFloat ty = NSMaxY(plot) - h - 13.0;
+        if (ty < NSMinY(plot)) ty = NSMinY(plot);
+        NMCurveDrawText(vtext, NSMakeRect(lx - 24, ty, 48, 12), 9, ink, NSFontWeightMedium);
+      }
     }
     for (int hour = 0; hour <= 24; hour += 6) {
       CGFloat x = NSMinX(plot) + NSWidth(plot) * hour / 24.0;

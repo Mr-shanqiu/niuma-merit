@@ -2421,6 +2421,18 @@ static NSString *NMCultivationTitle(int level) {
   self.cultivationView.meritText = meritText;
   self.cultivationView.progress = status.progress;
   self.cultivationView.maxLevel = status.max_level;
+  // FB15：注入完整等级阶梯（称号 + 门槛）用于 6 级全览。
+  {
+    NSMutableArray<NSString *> *lcTitles = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *lcThs = [NSMutableArray array];
+    const std::uint64_t *kT = niuma::cultivation::Thresholds();
+    for (int i = 0; i < niuma::cultivation::kLevelCount; ++i) {
+      [lcTitles addObject:NMCultivationTitle(i)];
+      [lcThs addObject:@((unsigned long long)kT[i])];
+    }
+    self.cultivationView.levelTitles = lcTitles;
+    self.cultivationView.levelThresholds = lcThs;
+  }
   if (status.max_level) {
     self.cultivationView.subtitle = [NSString stringWithFormat:@"%@ · %@",
         NMCultivationTitle(status.level), UiText(@"功德圆满", @"Perfection attained")];
