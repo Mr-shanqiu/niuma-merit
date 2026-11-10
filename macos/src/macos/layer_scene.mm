@@ -247,9 +247,10 @@
     return;
   }
 
+  // 固定等宽槽 + 统一基线 + 机械里程表位移模型（FB14 修对齐/宽度/基线）。
   const CGFloat symbolW = symbol.length ? [symbol sizeWithAttributes:attrs].width : 0.0;
-  const CGFloat digitAdv = [@"0" sizeWithAttributes:attrs].width + 1.0;
-  const CGFloat dotAdv = [@"." sizeWithAttributes:attrs].width + 1.0;
+  const CGFloat digitAdv = ceil([@"0" sizeWithAttributes:attrs].width) + 2.0;
+  const CGFloat dotAdv = ceil([@"." sizeWithAttributes:attrs].width) + 2.0;
   // 当前整数位数（至少 1）；小数固定 5 位。位数随金额增长平滑扩位。
   unsigned long long whole = (unsigned long long)floor(V / 100000.0);
   int intDigits = 1;
@@ -259,29 +260,41 @@
   const CGFloat totalW = symbolW + (CGFloat)slotCount * digitAdv + dotAdv;
   CGFloat x = (W - totalW) / 2.0;
   if (x < 2) x = 2;
-  const CGFloat lineH = ceil(self.fontSize * 1.12);
-  const CGFloat yBase = (H - self.fontSize) / 2.0;
+  const CGFloat lineH = H;          // 裁剪槽高 = 一行字高，只露一位
+  const CGFloat slotY = 0;
+  // 统一基线：所有数字轮 / 币种符号 / 小数点共用同一条基线，在槽内垂直居中。
+  const CGFloat textH = font.ascender - font.descender;
+  const CGFloat baselineY = slotY + (lineH - textH) / 2.0 - font.descender;
 
-  if (symbolW > 0) { [symbol drawAtPoint:NSMakePoint(x, yBase) withAttributes:attrs]; x += symbolW; }
+  if (symbolW > 0) { [symbol drawAtPoint:NSMakePoint(x, baselineY) withAttributes:attrs]; x += symbolW; }
   for (int e = maxE; e >= 0; --e) {
-    if (e == 4) {  // 小数点：整数与 5 位小数之间
-      [@"." drawAtPoint:NSMakePoint(x, yBase) withAttributes:attrs];
+    if (e == 4) {  // 小数点：整数与 5 位小数之间（同基线静态排版）
+      [@"." drawAtPoint:NSMakePoint(x, baselineY) withAttributes:attrs];
       x += dotAdv;
     }
-    double off = V / pow(10.0, e);
-    double base = fmod(off, 10.0);
-    if (base < 0) base += 10.0;
-    int fd = (int)floor(base);
-    double frac = base - fd;
-    // 裁剪到该位槽，竖向数字带按小数连续位移（k=0 当前位，k=1 下一位）。
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGRectMake(x, 0, digitAdv, H));
-    for (int k = -1; k <= 2; ++k) {
-      int dd = ((fd + k) % 10 + 10) % 10;
-      CGFloat y = yBase + (frac - (CGFloat)k) * lineH;
-      NSString *dg = [NSString stringWithFormat:@"%d", dd];
-      [dg drawAtPoint:NSMakePoint(x, y) withAttributes:attrs];
+    const double p = pow(10.0, (double)e);
+    const long long digit = (long long)floor(V / p);
+    const int cur = (int)(((digit % 10) + 10) % 10);
+    // 机械里程表模型：末位(e=0)始终连续转；更高位仅在其低位临近进位(…99→…00)时
+    // 0→1 滚动，其余时间静止对齐——避免每位各带随机小数导致整串散架。
+    double frac;
+    if (e == 0) {
+      frac = V - floor(V);
+    } else {
+      const double lower = fmod(V, p);
+      frac = lower - (p - 1.0);
+      if (frac < 0) frac = 0;
+      if (frac > 1) frac = 1;
     }
+    const int next = (cur + 1) % 10;
+    NSString *dcur = [NSString stringWithFormat:@"%d", cur];
+    NSString *dnext = [NSString stringWithFormat:@"%d", next];
+    const CGFloat gx = x + (digitAdv - [dcur sizeWithAttributes:attrs].width) / 2.0;
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, CGRectMake(x, slotY, digitAdv, lineH));
+    // 当前位随 frac 上移出槽，下一位自下方滚入（同一条数字带、同一基线）。
+    [dcur drawAtPoint:NSMakePoint(gx, baselineY + (CGFloat)frac * lineH) withAttributes:attrs];
+    [dnext drawAtPoint:NSMakePoint(gx, baselineY + ((CGFloat)frac - 1.0) * lineH) withAttributes:attrs];
     CGContextRestoreGState(ctx);
     x += digitAdv;
   }
