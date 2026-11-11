@@ -247,18 +247,32 @@
     return;
   }
 
-  // 固定等宽槽 + 统一基线 + 机械里程表位移模型（FB14 修对齐/宽度/基线）。
-  const CGFloat symbolW = symbol.length ? [symbol sizeWithAttributes:attrs].width : 0.0;
-  const CGFloat digitAdv = ceil([@"0" sizeWithAttributes:attrs].width) + 2.0;
-  const CGFloat dotAdv = ceil([@"." sizeWithAttributes:attrs].width) + 2.0;
-  // 当前整数位数（至少 1）；小数固定 5 位。位数随金额增长平滑扩位。
-  unsigned long long whole = (unsigned long long)floor(V / 100000.0);
-  int intDigits = 1;
-  for (unsigned long long w = whole; w >= 10; w /= 10) ++intDigits;
-  const int maxE = intDigits + 4;  // 指数：0=末位(1 tick)，4=第 5 位小数，maxE=最高整数位
-  const int slotCount = maxE + 1;
-  const CGFloat totalW = symbolW + (CGFloat)slotCount * digitAdv + dotAdv;
-  CGFloat x = (W - totalW) / 2.0;
+  // 固定等宽槽 + 统一基线 + 机械里程表位移模型；并按可用宽度自适应字号，
+  // 避免长金额（如 €425.87140 / 大额）右端被窗口裁掉（FB18）。
+  CGFloat symbolW = 0, digitAdv = 0, dotAdv = 0, totalW = 0, x = 0;
+  int maxE = 0, slotCount = 1;
+  unsigned long long whole = 0;
+  CGFloat useSize = self.fontSize;
+  for (int iter = 0; iter < 4; ++iter) {
+    NSFont *f2 = [NSFont monospacedDigitSystemFontOfSize:useSize weight:NSFontWeightRegular];
+    NSDictionary *a2 = @{NSFontAttributeName : f2, NSForegroundColorAttributeName : self.numberColor};
+    symbolW = symbol.length ? [symbol sizeWithAttributes:a2].width : 0.0;
+    digitAdv = ceil([@"0" sizeWithAttributes:a2].width) + 2.0;
+    dotAdv = ceil([@"." sizeWithAttributes:a2].width) + 2.0;
+    whole = (unsigned long long)floor(V / 100000.0);
+    int intDigits = 1;
+    for (unsigned long long w = whole; w >= 10; w /= 10) ++intDigits;
+    maxE = intDigits + 4;  // 0=末位(1 tick)，4=第 5 位小数，maxE=最高整数位
+    slotCount = maxE + 1;
+    totalW = symbolW + (CGFloat)slotCount * digitAdv + dotAdv;
+    if (totalW <= W - 6.0) break;
+    if (totalW <= 0) break;
+    useSize *= (CGFloat)(W - 6.0) / totalW;
+    if (useSize < 9.0) { useSize = 9.0; break; }
+  }
+  font = [NSFont monospacedDigitSystemFontOfSize:useSize weight:NSFontWeightRegular];
+  attrs = @{NSFontAttributeName : font, NSForegroundColorAttributeName : self.numberColor};
+  x = (W - totalW) / 2.0;
   if (x < 2) x = 2;
   const CGFloat lineH = H;          // 裁剪槽高 = 一行字高，只露一位
   const CGFloat slotY = 0;
