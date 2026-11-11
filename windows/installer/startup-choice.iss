@@ -20,6 +20,18 @@ english.InstallerSize=Installer: %1 MB
 chinesesimp.InstallerSize=安装包：%1 MB
 chinesetraditional.InstallerSize=安装包：%1 MB
 korean.InstallerSize=설치 파일: %1 MB
+french.StartAtLogin=Démarrer automatiquement à l'ouverture de session
+german.StartAtLogin=Automatisch bei der Anmeldung starten
+spanish.StartAtLogin=Iniciar automáticamente al iniciar sesión
+thai.StartAtLogin=เริ่มอัตโนมัติเมื่อเข้าสู่ระบบ
+french.LocalOnly=Fonctionne en local. Aucune connexion Internet requise.
+german.LocalOnly=Läuft lokal. Keine Internetverbindung erforderlich.
+spanish.LocalOnly=Funciona en local. No se necesita conexión a Internet.
+thai.LocalOnly=ทำงานในเครื่อง ไม่ต้องเชื่อมต่ออินเทอร์เน็ต
+french.InstallerSize=Installateur : %1 Mo
+german.InstallerSize=Installationsprogramm: %1 MB
+spanish.InstallerSize=Instalador: %1 MB
+thai.InstallerSize=แพ็กติดตั้ง: %1 MB
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "NiuMaMerit"; ValueData: """{app}\niuma-merit.exe""{#StartupArguments} --autostart"; Check: StartAtLoginSelected

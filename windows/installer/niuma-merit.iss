@@ -44,17 +44,33 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesesimp"; MessagesFile: "languages\ChineseSimplified.isl"
 Name: "chinesetraditional"; MessagesFile: "languages\ChineseSimplified.isl"
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
+Name: "french"; MessagesFile: "compiler:Languages\French.isl"
+Name: "german"; MessagesFile: "compiler:Languages\German.isl"
+Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
+Name: "thai"; MessagesFile: "compiler:Default.isl"
 
 [LangOptions]
 chinesetraditional.LanguageID=$0404
 chinesetraditional.LanguageName=中文
 korean.LanguageID=$0412
 korean.LanguageName=한국어
+french.LanguageID=$040c
+french.LanguageName=Français
+german.LanguageID=$0407
+german.LanguageName=Deutsch
+spanish.LanguageID=$0c0a
+spanish.LanguageName=Español
+thai.LanguageID=$041e
+thai.LanguageName=ไทย
 
 [CustomMessages]
 chinesesimp.LaunchApp=启动%1
 english.LaunchApp=Launch %1
 korean.LaunchApp=%1 열기
+french.LaunchApp=Lancer %1
+german.LaunchApp=%1 starten
+spanish.LaunchApp=Abrir %1
+thai.LaunchApp=เปิด %1
 
 [Files]
 Source: "..\..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
