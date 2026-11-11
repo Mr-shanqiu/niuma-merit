@@ -125,6 +125,10 @@ static void NMCurveDrawText(NSString *text, NSRect rect, CGFloat size, NSColor *
         NSPoint p3 = (i + 1 < e) ? pts[i + 2] : p2;
         NSPoint c1 = NSMakePoint(p1.x + (p2.x - p0.x) / 6.0, p1.y + (p2.y - p0.y) / 6.0);
         NSPoint c2 = NSMakePoint(p2.x - (p3.x - p1.x) / 6.0, p2.y - (p3.y - p1.y) / 6.0);
+        // FB17b：钳制控制点到绘图区（防止 Catmull-Rom 在尖峰处过冲到基线以下 / 顶部以上）。
+        const CGFloat yLo = NSMinY(plot), yHi = baseY;
+        c1.y = MIN(MAX(c1.y, yLo), yHi);
+        c2.y = MIN(MAX(c2.y, yLo), yHi);
         [linePath curveToPoint:p2 controlPoint1:c1 controlPoint2:c2];
         [areaPath curveToPoint:p2 controlPoint1:c1 controlPoint2:c2];
       }
@@ -132,6 +136,9 @@ static void NMCurveDrawText(NSString *text, NSRect rect, CGFloat size, NSColor *
       [areaPath closePath];
       ++q;
     }
+    // FB17b：整体裁剪到绘图区，双保险——曲线绝不出基线/顶边。
+    [NSGraphicsContext saveGraphicsState];
+    [[NSBezierPath bezierPathWithRect:plot] addClip];
     [[accent colorWithAlphaComponent:0.12] setFill];
     [areaPath fill];
     [accent setStroke];
@@ -139,6 +146,7 @@ static void NMCurveDrawText(NSString *text, NSRect rect, CGFloat size, NSColor *
     linePath.lineJoinStyle = NSLineJoinStyleRound;
     linePath.lineCapStyle = NSLineCapStyleRound;
     [linePath stroke];
+    [NSGraphicsContext restoreGraphicsState];
 
     for (int hour = 0; hour <= 24; hour += 6) {
       CGFloat x = NSMinX(plot) + NSWidth(plot) * hour / 24.0;
