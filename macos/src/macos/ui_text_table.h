@@ -207,6 +207,7 @@ static const NMUiTextEntry kNMUiTextEntries[] = {
     {"峰值/桶 %@", "峰值/桶 %@", "ピーク/バケット %@", "피크/버킷 %@", "ค่าสูงสุด/ช่วง %@", "Pic/intervalle %@", "Pico/intervalo %@", "Spitze/Intervall %@"},
     {"未采集", "未採集", "未収集", "미수집", "ยังไม่เก็บข้อมูล", "Non collecté", "Sin recopilar", "Nicht erfasst"},
     {"峰值 %@", "峰值 %@", "ピーク %@", "피크 %@", "ค่าสูงสุด %@", "Pic %@", "Pico %@", "Spitze %@"},
+    {"界面语言（重启生效）", "介面語言（重新開啟生效）", "表示言語（再起動で反映）", "인터페이스 언어 (재시작 후 적용)", "ภาษาอินเทอร์เฟซ (รีสตาร์ท)", "Langue de l'interface (redémarrage)", "Idioma de la interfaz (reiniciar)", "Oberflächensprache (Neustart)"},
 };
 // clang-format on
 

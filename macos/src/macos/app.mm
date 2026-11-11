@@ -294,8 +294,11 @@ static NMUiLanguage NMCurrentUiLanguage(void) {
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     NSString *override = NSProcessInfo.processInfo.environment[@"NIUMA_UI_LANGUAGE"];
-    resolved = NMLanguageFromTag(override.length > 0 ? override
-                                                   : NSLocale.preferredLanguages.firstObject);
+    NSString *saved = [[NSUserDefaults standardUserDefaults] stringForKey:@"NMUiLanguagePref"];
+    NSString *tag = override.length > 0 ? override
+                                        : (saved.length > 0 ? saved
+                                                            : NSLocale.preferredLanguages.firstObject);
+    resolved = NMLanguageFromTag(tag);
   });
   return resolved;
 }
@@ -4853,10 +4856,11 @@ static NSString *NMCultivationTitle(int level) {
   }
   CGFloat textHeight = ceil([bodyText boundingRectWithSize:NSMakeSize(contentWidth, CGFLOAT_MAX)
       options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading].size.height) + 4.0;
-  CGFloat contentHeight = textHeight + 16.0 + (douyinImage ? 276.0 : 0.0);
+  const CGFloat langHeaderH = 46.0;
+  CGFloat contentHeight = textHeight + 16.0 + langHeaderH + (douyinImage ? 276.0 : 0.0);
   NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, contentWidth, contentHeight)];
   NSTextField *body = [[NSTextField alloc] initWithFrame:
-      NSMakeRect(0, contentHeight - 8.0 - textHeight, contentWidth, textHeight)];
+      NSMakeRect(0, contentHeight - langHeaderH - 8.0 - textHeight, contentWidth, textHeight)];
   body.editable = NO;
   body.selectable = YES;
   body.allowsEditingTextAttributes = YES;
@@ -4880,6 +4884,30 @@ static NSString *NMCultivationTitle(int level) {
                                      @"Developer Douyin code, ID 1872941388");
     [content addSubview:code];
   }
+  // 界面语言选择（9 语，重启后生效）：满足非系统语言使用诉求。
+  NSTextField *langLabel = [NSTextField labelWithString:
+      UiText(@"界面语言（重启生效）", @"Interface language (restart to apply)")];
+  langLabel.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+  langLabel.textColor = NSColor.secondaryLabelColor;
+  langLabel.frame = NSMakeRect(0, contentHeight - 20.0, contentWidth, 16);
+  [content addSubview:langLabel];
+  NSPopUpButton *langPopup = [[NSPopUpButton alloc] initWithFrame:
+      NSMakeRect(0, contentHeight - langHeaderH, contentWidth, 26) pullsDown:NO];
+  NSArray<NSString *> *langNames = @[@"简体中文", @"繁體中文", @"日本語", @"English",
+      @"한국어", @"ไทย", @"Français", @"Español", @"Deutsch"];
+  NSArray<NSString *> *langTags = @[@"zh-Hans", @"zh-Hant", @"ja", @"en",
+      @"ko", @"th", @"fr", @"es", @"de"];
+  [langPopup addItemsWithTitles:langNames];
+  NSString *curTag = NSProcessInfo.processInfo.environment[@"NIUMA_UI_LANGUAGE"];
+  if (curTag.length == 0) curTag = [[NSUserDefaults standardUserDefaults] stringForKey:@"NMUiLanguagePref"];
+  if (curTag.length == 0) curTag = NSLocale.preferredLanguages.firstObject ?: @"zh-Hans";
+  NSString *curNorm = [NSString stringWithUTF8String:niuma::reminder::LocaleLanguage(
+      niuma::reminder::LocaleFromLanguageTag(curTag.UTF8String ?: "zh-Hans"))];
+  NSInteger selIdx = [langTags indexOfObject:curNorm];
+  [langPopup selectItemAtIndex:(selIdx == NSNotFound ? 0 : selIdx)];
+  langPopup.target = self;
+  langPopup.action = @selector(uiLanguageChanged:);
+  [content addSubview:langPopup];
   NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:
       NSMakeRect(0, 0, contentWidth + scrollerWidth, MIN(contentHeight, 120.0))];
   scroll.borderType = NSNoBorder;
@@ -4901,6 +4929,17 @@ static NSString *NMCultivationTitle(int level) {
   [alert layout];
   [content scrollPoint:NSMakePoint(0, MAX(0.0, contentHeight - scroll.contentSize.height))];
   [alert runModal];
+}
+
+// 「关于 → 界面语言」选择：保存偏好，重启后生效（NMCurrentUiLanguage 启动时读取）。
+- (void)uiLanguageChanged:(NSPopUpButton *)sender {
+  NSArray<NSString *> *tags = @[@"zh-Hans", @"zh-Hant", @"ja", @"en",
+      @"ko", @"th", @"fr", @"es", @"de"];
+  NSInteger i = sender.indexOfSelectedItem;
+  if (i >= 0 && i < (NSInteger)tags.count) {
+    [[NSUserDefaults standardUserDefaults] setObject:tags[(NSUInteger)i] forKey:@"NMUiLanguagePref"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+  }
 }
 
 @end
