@@ -4607,7 +4607,9 @@ std::wstring CalendarNumber(std::uint64_t value) {
 // 数字缩写：简中 万/亿/万亿；繁中 萬/億/萬億；日语 万/億/兆；英文 K/M/B/T。
 std::wstring CalendarCompactNumber(std::uint64_t value) {
   const auto lang = niuma::ui::CurrentLanguage();
-  const bool cjk = lang != niuma::ui::Language::English;
+  const bool cjk = lang == niuma::ui::Language::SimplifiedChinese ||
+      lang == niuma::ui::Language::TraditionalChinese ||
+      lang == niuma::ui::Language::Japanese || lang == niuma::ui::Language::Korean;
   const std::uint64_t unit = cjk ? (value>=1000000000000ULL ? 1000000000000ULL :
       value>=100000000 ? 100000000 : value>=10000 ? 10000 : 1) :
       (value>=1000000000000ULL ? 1000000000000ULL : value>=1000000000 ? 1000000000 : value>=1000000 ? 1000000 : value>=1000 ? 1000 : 1);
@@ -4638,6 +4640,10 @@ std::wstring CalendarOvertimeShort(int seconds) {
     case niuma::ui::Language::Korean:
       return L"연장 "+(h ? std::to_wstring(h)+L"시간 " : L"")+std::to_wstring(m)+L"분";
     case niuma::ui::Language::English:
+    case niuma::ui::Language::Thai:
+    case niuma::ui::Language::French:
+    case niuma::ui::Language::Spanish:
+    case niuma::ui::Language::German:
       return L"OT "+(h ? std::to_wstring(h)+L"h " : L"")+std::to_wstring(m)+L"m";
     default:
       return L"加班 "+(h ? std::to_wstring(h)+L"时" : L"")+std::to_wstring(m)+L"分";
@@ -4650,6 +4656,11 @@ std::wstring CalendarMonthTitle(int year, int month) {
       return std::to_wstring(year)+L" / "+std::to_wstring(month);
     case niuma::ui::Language::Korean:
       return std::to_wstring(year)+L"년 "+std::to_wstring(month)+L"월";
+    case niuma::ui::Language::Thai:
+    case niuma::ui::Language::French:
+    case niuma::ui::Language::Spanish:
+    case niuma::ui::Language::German:
+      return std::to_wstring(year)+L" / "+std::to_wstring(month);
     default:
       return std::to_wstring(year)+L"年"+std::to_wstring(month)+L"月";
   }
@@ -4667,6 +4678,12 @@ std::wstring CalendarDateDetail(int year, int month, int day, int weekdayIndex) 
     case niuma::ui::Language::Korean:
       return std::to_wstring(month)+L"월 "+std::to_wstring(day)+L"일 ("+
              std::wstring(WeekdayShortLabel(weekdayIndex))+L")";
+    case niuma::ui::Language::Thai:
+    case niuma::ui::Language::French:
+    case niuma::ui::Language::Spanish:
+    case niuma::ui::Language::German:
+      return std::wstring(WeekdayLongLabel(weekdayIndex))+L", "+std::to_wstring(year)+L"/"+
+             std::to_wstring(month)+L"/"+std::to_wstring(day);
     default:
       return std::wstring(WeekdayLongLabel(weekdayIndex))+L", "+std::to_wstring(year)+L"/"+
              std::to_wstring(month)+L"/"+std::to_wstring(day);

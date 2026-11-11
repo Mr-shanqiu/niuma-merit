@@ -23,6 +23,10 @@ enum class Language {
   Japanese = 2,
   English = 3,
   Korean = 4,
+  Thai = 5,
+  French = 6,
+  Spanish = 7,
+  German = 8,
 };
 
 // 当前 UI 语言（进程内只解析一次）。

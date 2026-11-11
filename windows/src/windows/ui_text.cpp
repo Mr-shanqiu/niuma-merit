@@ -31,6 +31,10 @@ Language LanguageFromTag(const std::wstring& tag) {
     case niuma::reminder::Locale::Japanese: return Language::Japanese;
     case niuma::reminder::Locale::Korean: return Language::Korean;
     case niuma::reminder::Locale::English: return Language::English;
+    case niuma::reminder::Locale::Thai: return Language::Thai;
+    case niuma::reminder::Locale::French: return Language::French;
+    case niuma::reminder::Locale::Spanish: return Language::Spanish;
+    case niuma::reminder::Locale::German: return Language::German;
     case niuma::reminder::Locale::Chinese: break;
   }
   return Language::SimplifiedChinese;
@@ -74,6 +78,10 @@ struct Entry {
   std::wstring zhHant;
   std::wstring ja;
   std::wstring ko;
+  std::wstring th;
+  std::wstring fr;
+  std::wstring es;
+  std::wstring de;
 };
 
 const std::unordered_map<std::wstring, Entry>& LookupTable() {
@@ -82,7 +90,9 @@ const std::unordered_map<std::wstring, Entry>& LookupTable() {
     map.reserve(kNMUiTextEntryCountW);
     for (std::size_t index = 0; index < kNMUiTextEntryCountW; ++index) {
       const NMUiTextEntryW& entry = kNMUiTextEntriesW[index];
-      map.emplace(std::wstring(entry.zhHans), Entry{entry.zhHant, entry.ja, entry.ko});
+      map.emplace(std::wstring(entry.zhHans),
+                  Entry{entry.zhHant, entry.ja, entry.ko, entry.th, entry.fr, entry.es,
+                        entry.de});
     }
     return map;
   }();
@@ -102,6 +112,10 @@ const char* CurrentLanguageTag() {
     case Language::Japanese: return "ja";
     case Language::Korean: return "ko";
     case Language::English: return "en";
+    case Language::Thai: return "th";
+    case Language::French: return "fr";
+    case Language::Spanish: return "es";
+    case Language::German: return "de";
     case Language::SimplifiedChinese: break;
   }
   return "zh-Hans";
@@ -118,7 +132,11 @@ const wchar_t* Text(const wchar_t* zhHans, const wchar_t* english) {
     case Language::English: return english;
     case Language::TraditionalChinese:
     case Language::Japanese:
-    case Language::Korean: {
+    case Language::Korean:
+    case Language::Thai:
+    case Language::French:
+    case Language::Spanish:
+    case Language::German: {
       const auto& table = LookupTable();
       const auto found = table.find(std::wstring(zhHans));
       if (found == table.end()) return zhHans;
@@ -126,6 +144,10 @@ const wchar_t* Text(const wchar_t* zhHans, const wchar_t* english) {
         case Language::TraditionalChinese: return found->second.zhHant.c_str();
         case Language::Japanese: return found->second.ja.c_str();
         case Language::Korean: return found->second.ko.c_str();
+        case Language::Thai: return found->second.th.c_str();
+        case Language::French: return found->second.fr.c_str();
+        case Language::Spanish: return found->second.es.c_str();
+        case Language::German: return found->second.de.c_str();
         default: break;
       }
       return zhHans;
