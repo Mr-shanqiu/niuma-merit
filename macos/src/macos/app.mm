@@ -263,6 +263,10 @@ typedef NS_ENUM(NSInteger, NMUiLanguage) {
   NMUiLanguageJapanese = 2,
   NMUiLanguageEnglish = 3,
   NMUiLanguageKorean = 4,
+  NMUiLanguageThai = 5,
+  NMUiLanguageFrench = 6,
+  NMUiLanguageSpanish = 7,
+  NMUiLanguageGerman = 8,
 };
 
 // 语言归一化统一走 S0 的 LocaleFromLanguageTag（reminder_policy.h）：
@@ -274,6 +278,10 @@ static NMUiLanguage NMLanguageFromTag(NSString *tag) {
     case niuma::reminder::Locale::Japanese: return NMUiLanguageJapanese;
     case niuma::reminder::Locale::Korean: return NMUiLanguageKorean;
     case niuma::reminder::Locale::English: return NMUiLanguageEnglish;
+    case niuma::reminder::Locale::Thai: return NMUiLanguageThai;
+    case niuma::reminder::Locale::French: return NMUiLanguageFrench;
+    case niuma::reminder::Locale::Spanish: return NMUiLanguageSpanish;
+    case niuma::reminder::Locale::German: return NMUiLanguageGerman;
     case niuma::reminder::Locale::Chinese: break;
   }
   return NMUiLanguageSimplifiedChinese;
@@ -298,24 +306,46 @@ static NSDictionary<NSString *, NSString *> *NMUiTextTable(NMUiLanguage language
   static NSDictionary<NSString *, NSString *> *zhHant;
   static NSDictionary<NSString *, NSString *> *ja;
   static NSDictionary<NSString *, NSString *> *ko;
+  static NSDictionary<NSString *, NSString *> *th;
+  static NSDictionary<NSString *, NSString *> *fr;
+  static NSDictionary<NSString *, NSString *> *es;
+  static NSDictionary<NSString *, NSString *> *de;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     NSMutableDictionary *hant = [NSMutableDictionary dictionaryWithCapacity:kNMUiTextEntryCount];
     NSMutableDictionary *japanese = [NSMutableDictionary dictionaryWithCapacity:kNMUiTextEntryCount];
     NSMutableDictionary *korean = [NSMutableDictionary dictionaryWithCapacity:kNMUiTextEntryCount];
+    NSMutableDictionary *thai = [NSMutableDictionary dictionaryWithCapacity:kNMUiTextEntryCount];
+    NSMutableDictionary *french = [NSMutableDictionary dictionaryWithCapacity:kNMUiTextEntryCount];
+    NSMutableDictionary *spanish = [NSMutableDictionary dictionaryWithCapacity:kNMUiTextEntryCount];
+    NSMutableDictionary *german = [NSMutableDictionary dictionaryWithCapacity:kNMUiTextEntryCount];
     for (std::size_t index = 0; index < kNMUiTextEntryCount; ++index) {
       const NMUiTextEntry &entry = kNMUiTextEntries[index];
       hant[@(entry.zhHans)] = @(entry.zhHant);
       japanese[@(entry.zhHans)] = @(entry.ja);
       korean[@(entry.zhHans)] = @(entry.ko);
+      thai[@(entry.zhHans)] = @(entry.th);
+      french[@(entry.zhHans)] = @(entry.fr);
+      spanish[@(entry.zhHans)] = @(entry.es);
+      german[@(entry.zhHans)] = @(entry.de);
     }
     zhHant = hant;
     ja = japanese;
     ko = korean;
+    th = thai;
+    fr = french;
+    es = spanish;
+    de = german;
   });
-  if (language == NMUiLanguageTraditionalChinese) return zhHant;
-  if (language == NMUiLanguageKorean) return ko;
-  return ja;
+  switch (language) {
+    case NMUiLanguageTraditionalChinese: return zhHant;
+    case NMUiLanguageKorean: return ko;
+    case NMUiLanguageThai: return th;
+    case NMUiLanguageFrench: return fr;
+    case NMUiLanguageSpanish: return es;
+    case NMUiLanguageGerman: return de;
+    default: return ja;
+  }
 }
 
 // UiText(简中, English)：zh-Hans 取第一参数；en 取第二参数；zh-Hant / ja 查表。
@@ -325,6 +355,10 @@ static NSString *UiText(NSString *chinese, NSString *english) {
     case NMUiLanguageKorean:
     case NMUiLanguageTraditionalChinese:
     case NMUiLanguageJapanese:
+    case NMUiLanguageThai:
+    case NMUiLanguageFrench:
+    case NMUiLanguageSpanish:
+    case NMUiLanguageGerman:
       return NMUiTextTable(NMCurrentUiLanguage())[chinese] ?: chinese;
     case NMUiLanguageSimplifiedChinese: return chinese;
   }
@@ -340,6 +374,14 @@ static NSArray<NSString *> *NMWeekdayLabels(void) {
       return @[ @"월", @"화", @"수", @"목", @"금", @"토", @"일" ];
     case NMUiLanguageEnglish:
       return @[ @"MON", @"TUE", @"WED", @"THU", @"FRI", @"SAT", @"SUN" ];
+    case NMUiLanguageThai:
+      return @[ @"จ.", @"อ.", @"พ.", @"พฤ.", @"ศ.", @"ส.", @"อา." ];
+    case NMUiLanguageFrench:
+      return @[ @"lun", @"mar", @"mer", @"jeu", @"ven", @"sam", @"dim" ];
+    case NMUiLanguageSpanish:
+      return @[ @"lun", @"mar", @"mié", @"jue", @"vie", @"sáb", @"dom" ];
+    case NMUiLanguageGerman:
+      return @[ @"Mo", @"Di", @"Mi", @"Do", @"Fr", @"Sa", @"So" ];
     case NMUiLanguageSimplifiedChinese:
     case NMUiLanguageTraditionalChinese:
       break;
@@ -356,6 +398,10 @@ static niuma::reminder::Locale NMReminderLocale(void) {
     case NMUiLanguageJapanese: return niuma::reminder::Locale::Japanese;
     case NMUiLanguageKorean: return niuma::reminder::Locale::Korean;
     case NMUiLanguageEnglish: return niuma::reminder::Locale::English;
+    case NMUiLanguageThai: return niuma::reminder::Locale::Thai;
+    case NMUiLanguageFrench: return niuma::reminder::Locale::French;
+    case NMUiLanguageSpanish: return niuma::reminder::Locale::Spanish;
+    case NMUiLanguageGerman: return niuma::reminder::Locale::German;
     case NMUiLanguageSimplifiedChinese: break;
   }
   return niuma::reminder::Locale::Chinese;
@@ -2536,6 +2582,12 @@ static NSString *NMCultivationTitle(int level) {
       case NMUiLanguageEnglish:
         model.subtitle = [NSString stringWithFormat:@"%@ %@", NMMedalPeriodEnglish(period),
             NMMedalTierEnglish(tier)];
+        break;
+      case NMUiLanguageThai:
+      case NMUiLanguageFrench:
+      case NMUiLanguageSpanish:
+      case NMUiLanguageGerman:
+        model.subtitle = [NSString stringWithFormat:@"%@ %@", periodName, NMMedalTierLabel(tier)];
         break;
     }
   }
