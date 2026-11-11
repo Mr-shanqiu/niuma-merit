@@ -16,7 +16,17 @@ inline constexpr unsigned kReminderDisplayMilliseconds = 15'000;
 // UI locale. Chinese/English keep their original enumerator names and values so
 // existing callers (app.mm / app.cpp) stay source- and ABI-compatible. The two
 // additional members cover the 0.9.6 public languages.
-enum class Locale : std::uint8_t { Chinese, English, ChineseTraditional, Japanese, Korean };
+enum class Locale : std::uint8_t {
+  Chinese,
+  English,
+  ChineseTraditional,
+  Japanese,
+  Korean,
+  Thai,
+  French,
+  Spanish,
+  German,
+};
 enum class Overtime : std::uint8_t { Unknown, No, Yes };
 
 // Canonical content-language tag used by data packs for each UI locale.
@@ -27,6 +37,10 @@ inline const char* LocaleLanguage(Locale locale) {
     case Locale::Japanese: return "ja";
     case Locale::English: return "en";
     case Locale::Korean: return "ko";
+    case Locale::Thai: return "th";
+    case Locale::French: return "fr";
+    case Locale::Spanish: return "es";
+    case Locale::German: return "de";
   }
   return "en";
 }
@@ -59,6 +73,10 @@ inline Locale LocaleFromLanguageTag(const char* tag) {
   if (starts_with("ja")) return Locale::Japanese;
   if (starts_with("en")) return Locale::English;
   if (starts_with("ko")) return Locale::Korean;
+  if (starts_with("th")) return Locale::Thai;
+  if (starts_with("fr")) return Locale::French;
+  if (starts_with("es")) return Locale::Spanish;
+  if (starts_with("de")) return Locale::German;
   if (starts_with("zh")) {
     std::string lowered(tag);
     for (char& c : lowered) c = lower(c);

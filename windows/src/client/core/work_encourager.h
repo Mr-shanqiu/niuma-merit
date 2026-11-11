@@ -113,6 +113,14 @@ inline CurrencyInfo CurrencyForLanguage(const std::string& language) {
     return CurrencyInfo{"JPY", "JP¥", 0};
   if (language == "ko" || language.compare(0, 2, "ko") == 0)
     return CurrencyInfo{"KRW", "₩", 0};
+  if (language == "th" || language.compare(0, 2, "th") == 0)
+    return CurrencyInfo{"THB", "฿", 2};
+  if (language == "fr" || language.compare(0, 2, "fr") == 0)
+    return CurrencyInfo{"EUR", "€", 2};
+  if (language == "es" || language.compare(0, 2, "es") == 0)
+    return CurrencyInfo{"EUR", "€", 2};
+  if (language == "de" || language.compare(0, 2, "de") == 0)
+    return CurrencyInfo{"EUR", "€", 2};
   if (language == "en" || language.compare(0, 2, "en") == 0)
     return CurrencyInfo{"USD", "US$", 2};
   return CurrencyInfo{"CNY", "CN¥", 2};
@@ -131,6 +139,7 @@ inline const char* SymbolForCode(const std::string& code) {
   if (code == "KRW") return "₩";
   if (code == "USD") return "US$";
   if (code == "EUR") return "€";
+  if (code == "THB") return "฿";
   if (code == "GBP") return "£";
   return "";
 }
