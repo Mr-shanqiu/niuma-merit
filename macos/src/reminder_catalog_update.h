@@ -341,14 +341,17 @@ inline bool ValidCatalogId(const std::string& id) {
 // Simplified Chinese; new packs may use BCP-47 "zh-Hans"/"zh-Hant"/"ja"/"ko" as well.
 inline bool SupportedContentLanguage(const std::string& language) {
   return language == "zh-CN" || language == "zh-Hans" || language == "zh-Hant" ||
-      language == "ja" || language == "en" || language == "ko";
+      language == "ja" || language == "en" || language == "ko" ||
+      language == "th" || language == "fr" || language == "es" || language == "de";
 }
 
 // Per-item text budget in UTF-8 code points. Mirrors the original 80/160 split:
 // double-width CJK scripts (Simplified, Traditional, Japanese) use the tighter
 // budget, Latin uses the wider one.
 inline std::size_t ContentTextLimit(const std::string& language) {
-  return language == "en" ? 160 : 80;
+  if (language == "zh-CN" || language == "zh-Hans" || language == "zh-Hant" ||
+      language == "ja" || language == "ko") return 80;
+  return 160;  // 拉丁/泰文等给 160 码点
 }
 
 struct OwnedCatalogItem {
@@ -444,7 +447,7 @@ inline bool ParseCatalogEnvelope(const std::string& bytes, CatalogEnvelope* enve
   CatalogEnvelope candidate;
   candidate.key_id = std::move(key_id);
   std::vector<std::uint8_t> payload;
-  if (!DecodeBase64(payload_b64, &payload) || payload.empty() || payload.size() > 2 * 1024 * 1024)
+  if (!DecodeBase64(payload_b64, &payload) || payload.empty() || payload.size() > 3 * 1024 * 1024)
     return fail("invalid payload encoding or size");
   if (!DecodeBase64(signature_b64, &candidate.signature) || candidate.signature.size() != 64)
     return fail("signature must be 64 raw bytes");
@@ -504,7 +507,7 @@ inline bool ValidateCatalogPayload(const std::string& payload,
 
   const JsonValue* languages = JsonField(root, "languages");
   if (languages == nullptr || languages->kind != JsonValue::Kind::Array ||
-      languages->array.empty() || languages->array.size() > 8)
+      languages->array.empty() || languages->array.size() > 12)
     return fail("catalog must declare at least one supported language");
   std::set<std::string> declared_languages;
   for (const JsonValue& language : languages->array) {
@@ -567,7 +570,7 @@ inline bool ValidateCatalogPayload(const std::string& payload,
 
   const JsonValue* items = JsonField(root, "items");
   if (items == nullptr || items->kind != JsonValue::Kind::Array || items->array.empty() ||
-      items->array.size() > 6400) return fail("invalid item list size");
+      items->array.size() > 8000) return fail("invalid item list size");
   std::set<std::string> item_ids;
   std::map<std::string, std::size_t> language_counts;
   for (const JsonValue& value : items->array) {
