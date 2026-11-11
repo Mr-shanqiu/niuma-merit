@@ -4318,13 +4318,8 @@ static NSString *NMCultivationTitle(int level) {
   for (NSMenuItem *item in entries) [menu addItem:item];
   NSFont *menuFont = [NSFont systemFontOfSize:14];
   menu.font = menuFont;
-  if (@available(macOS 11.0, *)) {
-    NSArray *symbols = @[@"eye.slash", @"arrow.up.left.and.arrow.down.right", @"person.crop.square", @"textformat.size", @"calendar", @"clock", @"rosette", @"power", @"info.circle", @"rectangle.portrait.and.arrow.right"];
-    for (NSUInteger index = 0; index < entries.count; ++index) {
-      NSImage *image = [NSImage imageWithSystemSymbolName:symbols[index] accessibilityDescription:nil];
-      image.size = NSMakeSize(16, 16); ((NSMenuItem *)entries[index]).image = image;
-    }
-  }
+  // 菜单项不设图标：图标（含 SF Symbol 在部分系统渲染成文字）意义不大且会带来
+  // 本地化不一致，故统一去掉，保持干净的纯文字菜单（随语言本地化）。
   CGFloat widestTitle = 0;
   for (NSMenuItem *item in menu.itemArray) {
     if (item.isSeparatorItem) continue;
