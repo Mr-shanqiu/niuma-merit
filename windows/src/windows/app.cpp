@@ -4565,7 +4565,7 @@ INT_PTR CALLBACK AboutDialogProcedure(HWND window, UINT message,
           niuma::ui::Message(window,
               UiText(L"界面语言将在下次启动客户端后生效。",
                      L"The interface language will apply after you restart the app."),
-              UiText(L"界面语言", L"Interface language"));
+              UiText(L"界面语言", L"Interface language"), MB_OK | MB_ICONINFORMATION);
         }
         return TRUE;
       }
