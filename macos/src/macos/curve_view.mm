@@ -76,36 +76,70 @@ static void NMCurveDrawText(NSString *text, NSRect rect, CGFloat size, NSColor *
     niuma::curve::Coverage coverage;
     const bool haveCoverage = niuma::curve::Coverage::FromHex(
         std::string([snapshot[@"coverage"] UTF8String] ?: ""), &coverage);
+    // FB17：真折线——每 30 分钟一个点（48 点），Catmull-Rom 平滑 + 淡面积填充。
+    const int kPoints = 48;
     std::uint64_t maxValue = 0;
-    for (NSUInteger i = 0; i < buckets.count && i < 96; ++i) {
-      if (haveCoverage && !coverage.Get((int)i)) continue;
-      maxValue = std::max(maxValue, [buckets[i] unsignedLongLongValue]);
+    std::uint64_t vals[kPoints];
+    BOOL has[kPoints];
+    for (int p = 0; p < kPoints; ++p) {
+      const int b0 = p * 2, b1 = p * 2 + 1;
+      const bool c0 = haveCoverage && (b0 < 96) && coverage.Get(b0);
+      const bool c1 = haveCoverage && (b1 < 96) && coverage.Get(b1);
+      std::uint64_t v = 0;
+      if (c0 && b0 < (int)buckets.count) v += [buckets[(NSUInteger)b0] unsignedLongLongValue];
+      if (c1 && b1 < (int)buckets.count) v += [buckets[(NSUInteger)b1] unsignedLongLongValue];
+      vals[p] = v;
+      has[p] = (c0 || c1);
+      if (has[p] && v > maxValue) maxValue = v;
     }
     if (maxValue == 0) maxValue = 1;
-    const CGFloat step = NSWidth(plot) / 96.0;
-    for (int i = 0; i < 96; ++i) {
-      const bool collected = haveCoverage && coverage.Get(i);
-      NSRect cell = NSMakeRect(NSMinX(plot) + i * step, NSMinY(plot), std::max<CGFloat>(1, step - 1),
-                               NSHeight(plot));
-      if (!collected) {
-        [[NSColor colorWithCalibratedWhite:.90 alpha:1] setFill];
-        NSRectFill(NSMakeRect(cell.origin.x, NSMaxY(plot) - 3, cell.size.width, 3));
-        continue;
-      }
-      std::uint64_t value = i < (int)buckets.count ? [buckets[(NSUInteger)i] unsignedLongLongValue] : 0;
-      CGFloat h = NSHeight(plot) * (CGFloat)value / (CGFloat)maxValue;
-      if (h < (value > 0 ? 2 : 0)) h = value > 0 ? 2 : 0;
-      [(i >= 36 && i < 54 ? blue : accent) setFill];
-      NSRectFill(NSMakeRect(cell.origin.x, NSMaxY(plot) - h, cell.size.width, h));
-      // FB16：非零时段在柱顶显示该时段功德数，便于直读每个时段。
-      if (value > 0) {
-        NSString *vtext = [numbers stringFromNumber:@(value)];
-        CGFloat lx = cell.origin.x + cell.size.width / 2.0;
-        CGFloat ty = NSMaxY(plot) - h - 13.0;
-        if (ty < NSMinY(plot)) ty = NSMinY(plot);
-        NMCurveDrawText(vtext, NSMakeRect(lx - 24, ty, 48, 12), 9, ink, NSFontWeightMedium);
-      }
+    NSPoint pts[kPoints];
+    const CGFloat stepX = NSWidth(plot) / (CGFloat)kPoints;
+    const CGFloat baseY = NSMaxY(plot);
+    for (int p = 0; p < kPoints; ++p) {
+      CGFloat h = NSHeight(plot) * (CGFloat)vals[p] / (CGFloat)maxValue;
+      CGFloat x = NSMinX(plot) + stepX * (p + 0.5);
+      pts[p] = NSMakePoint(x, NSMaxY(plot) - h);
     }
+    // 未采集区段：底部灰色短标
+    [[NSColor colorWithCalibratedWhite:.90 alpha:1] setFill];
+    for (int p = 0; p < kPoints; ++p)
+      if (!has[p])
+        NSRectFill(NSMakeRect(NSMinX(plot) + stepX * p, NSMaxY(plot) - 3,
+                              std::max<CGFloat>(1, stepX - 1), 3));
+
+    NSBezierPath *linePath = [NSBezierPath bezierPath];
+    NSBezierPath *areaPath = [NSBezierPath bezierPath];
+    int q = 0;
+    while (q < kPoints) {
+      if (!has[q]) { ++q; continue; }
+      int s = q;
+      while (q + 1 < kPoints && has[q + 1]) ++q;
+      int e = q;
+      [linePath moveToPoint:pts[s]];
+      [areaPath moveToPoint:NSMakePoint(pts[s].x, baseY)];
+      [areaPath lineToPoint:pts[s]];
+      for (int i = s; i < e; ++i) {
+        NSPoint p0 = (i > s) ? pts[i - 1] : pts[i];
+        NSPoint p1 = pts[i], p2 = pts[i + 1];
+        NSPoint p3 = (i + 1 < e) ? pts[i + 2] : p2;
+        NSPoint c1 = NSMakePoint(p1.x + (p2.x - p0.x) / 6.0, p1.y + (p2.y - p0.y) / 6.0);
+        NSPoint c2 = NSMakePoint(p2.x - (p3.x - p1.x) / 6.0, p2.y - (p3.y - p1.y) / 6.0);
+        [linePath curveToPoint:p2 controlPoint1:c1 controlPoint2:c2];
+        [areaPath curveToPoint:p2 controlPoint1:c1 controlPoint2:c2];
+      }
+      [areaPath lineToPoint:NSMakePoint(pts[e].x, baseY)];
+      [areaPath closePath];
+      ++q;
+    }
+    [[accent colorWithAlphaComponent:0.12] setFill];
+    [areaPath fill];
+    [accent setStroke];
+    linePath.lineWidth = 2.0;
+    linePath.lineJoinStyle = NSLineJoinStyleRound;
+    linePath.lineCapStyle = NSLineCapStyleRound;
+    [linePath stroke];
+
     for (int hour = 0; hour <= 24; hour += 6) {
       CGFloat x = NSMinX(plot) + NSWidth(plot) * hour / 24.0;
       NMCurveDrawText([NSString stringWithFormat:@"%02d:00", hour],

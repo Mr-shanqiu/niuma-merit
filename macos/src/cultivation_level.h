@@ -5,7 +5,8 @@
 // 用中性修行隐喻，**不出现「佛/菩萨/罗汉」等神祇字眼**。
 // 成长值 = 累计功德总数（lifetime total；不随换形象/清空日历变化，由调用方持久化）。
 // 等级阶梯（累计功德门槛，可调）：
-//   1 香客 0 / 2 居士 100 / 3 行者 500 / 4 苦行僧 2000 / 5 高僧 8000 / 6 宗师 30000
+//   1 香客 0 / 2 居士 5000 / 3 行者 50000 / 4 苦行僧 400000 / 5 高僧 2000000 / 6 宗师 8000000
+// （按约 4 万次/工作日重估：居士≈2h、行者≈1.5天、苦行僧≈2周、高僧≈2.5月、宗师≈8-10月）
 // 称号的本地化（zh-Hans/zh-Hant/ja/en）在 UI 层用 UiText 完成；本层只给等级序号。
 
 #include <cstdint>
@@ -17,7 +18,7 @@ constexpr int kLevelCount = 6;
 
 // 累计功德门槛（升序）；索引 0 对应等级 1（香客）。
 inline const std::uint64_t *Thresholds() {
-  static const std::uint64_t kThresholds[kLevelCount] = {0, 100, 500, 2000, 8000, 30000};
+  static const std::uint64_t kThresholds[kLevelCount] = {0, 5000, 50000, 400000, 2000000, 8000000};
   return kThresholds;
 }
 
