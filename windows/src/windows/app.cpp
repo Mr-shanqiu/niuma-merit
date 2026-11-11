@@ -4049,6 +4049,26 @@ bool ShowPrivacyNotice(HWND owner) {
 }
 
 constexpr int kAboutHelpLink = 3090;
+constexpr int kAboutLanguageCombo = 3091;
+
+// 「关于 → 界面语言」下拉：9 语原生名 + 标签，顺序与 niuma::ui::Language 枚举一致。
+const wchar_t* const kUiLanguageNames[] = {L"简体中文", L"繁體中文", L"日本語", L"English",
+    L"한국어", L"ไทย", L"Français", L"Español", L"Deutsch"};
+const wchar_t* const kUiLanguageTags[] = {L"zh-Hans", L"zh-Hant", L"ja", L"en",
+    L"ko", L"th", L"fr", L"es", L"de"};
+constexpr int kUiLanguageCount =
+    static_cast<int>(sizeof(kUiLanguageNames) / sizeof(kUiLanguageNames[0]));
+
+void WriteLanguagePreference(const wchar_t* tag) {
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Niuma\\Merit", 0, nullptr, 0,
+                      KEY_SET_VALUE, nullptr, &key, nullptr) == ERROR_SUCCESS) {
+    RegSetValueExW(key, L"NMUiLanguagePref", 0, REG_SZ,
+                   reinterpret_cast<const BYTE*>(tag),
+                   static_cast<DWORD>((std::wcslen(tag) + 1) * sizeof(wchar_t)));
+    RegCloseKey(key);
+  }
+}
 
 const wchar_t* AboutDouyinCaption() {
   return UiText(L"用抖音扫一扫，加入牛马电子功德共创群＆AI学习。\n群号：117093216342\n免费领取权益包，交流形象创意。\n开发者抖音号：1872941388",
@@ -4060,6 +4080,7 @@ struct AboutDialogState {
   PngResource douyin;
   HWND viewport = nullptr;
   HWND helpLink = nullptr;
+  HWND languageCombo = nullptr;
   HFONT font = nullptr;
   WNDPROC buttonProcedure = nullptr;
   int padding = 16;
@@ -4404,6 +4425,16 @@ void LayoutAboutDialog(HWND window, AboutDialogState& state) {
                                   std::max(1, width - padding * 2));
   MoveWindow(GetDlgItem(window, IDOK), width - padding - buttonWidth,
              height - padding - buttonHeight, buttonWidth, buttonHeight, TRUE);
+  if (state.languageCombo) {
+    const int comboHeight = std::min(MulDiv(24, gState.dpi, 96), buttonHeight);
+    int comboWidth = MulDiv(170, gState.dpi, 96);
+    const int maxCombo = std::max(1, width - padding * 2 - buttonWidth - padding);
+    if (comboWidth > maxCombo) comboWidth = maxCombo;
+    MoveWindow(state.languageCombo, padding,
+               height - padding - (buttonHeight + comboHeight) / 2,
+               comboWidth, comboHeight, TRUE);
+    ShowWindow(state.languageCombo, SW_SHOW);
+  }
 }
 
 INT_PTR CALLBACK AboutDialogProcedure(HWND window, UINT message,
@@ -4495,6 +4526,21 @@ INT_PTR CALLBACK AboutDialogProcedure(HWND window, UINT message,
                    work.top + (work.bottom - work.top - height) / 2,
                    width, height, SWP_NOZORDER);
       niuma::ui::Apply(window);
+      // 「关于 → 界面语言」下拉（9 语，重启生效）。
+      state->languageCombo = CreateWindowExW(0, L"COMBOBOX", L"",
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+          0, 0, 100, 200, window, reinterpret_cast<HMENU>(kAboutLanguageCombo),
+          GetModuleHandleW(nullptr), nullptr);
+      if (state->languageCombo) {
+        for (int i = 0; i < kUiLanguageCount; ++i)
+          SendMessageW(state->languageCombo, CB_ADDSTRING, 0,
+                       reinterpret_cast<LPARAM>(kUiLanguageNames[i]));
+        int current = static_cast<int>(niuma::ui::CurrentLanguage());
+        SendMessageW(state->languageCombo, CB_SETCURSEL, static_cast<WPARAM>(current), 0);
+        if (state->font)
+          SendMessageW(state->languageCombo, WM_SETFONT,
+                       reinterpret_cast<WPARAM>(state->font), TRUE);
+      }
       SetFocus(GetDlgItem(window, IDOK));
       return FALSE;
     }
@@ -4512,6 +4558,17 @@ INT_PTR CALLBACK AboutDialogProcedure(HWND window, UINT message,
       }
       break;
     case WM_COMMAND:
+      if (LOWORD(wParam) == kAboutLanguageCombo && HIWORD(wParam) == CBN_SELCHANGE) {
+        int index = static_cast<int>(SendMessageW(state->languageCombo, CB_GETCURSEL, 0, 0));
+        if (index >= 0 && index < kUiLanguageCount) {
+          WriteLanguagePreference(kUiLanguageTags[index]);
+          niuma::ui::Message(window,
+              UiText(L"界面语言将在下次启动客户端后生效。",
+                     L"The interface language will apply after you restart the app."),
+              UiText(L"界面语言", L"Interface language"));
+        }
+        return TRUE;
+      }
       if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
         EndDialog(window, LOWORD(wParam));
         return TRUE;

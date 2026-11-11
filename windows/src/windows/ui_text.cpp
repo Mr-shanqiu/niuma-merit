@@ -71,7 +71,17 @@ std::wstring SystemPreferredLanguage() {
 
 Language ResolveLanguage() {
   const std::wstring override = EnvironmentOverride();
-  return LanguageFromTag(override.empty() ? SystemPreferredLanguage() : override);
+  if (!override.empty()) return LanguageFromTag(override);
+  // 「关于 → 界面语言」写入的用户偏好（注册表 HKCU\Software\Niuma\Merit\NMUiLanguagePref），
+  // 优先级：环境变量 > 用户偏好 > 系统首选语言。
+  wchar_t saved[64] = {};
+  DWORD savedSize = static_cast<DWORD>(sizeof(saved));
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Niuma\\Merit", L"NMUiLanguagePref",
+                   RRF_RT_REG_SZ, nullptr, saved, &savedSize) == ERROR_SUCCESS &&
+      saved[0] != L'\0') {
+    return LanguageFromTag(std::wstring(saved));
+  }
+  return LanguageFromTag(SystemPreferredLanguage());
 }
 
 struct Entry {
