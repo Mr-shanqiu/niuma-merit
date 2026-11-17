@@ -552,6 +552,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 
 @interface MeritView : NSView
 @property(nonatomic, strong) NMLayerScene *renderer;
+@property(nonatomic, strong) NSVisualEffectView *frostView;  // 毛玻璃底片(文字区)
 @property(nonatomic, copy) NSString *renderedIdentity;
 @property(nonatomic) NSInteger renderedScene;
 @property(nonatomic) BOOL presentationPending;
@@ -896,6 +897,15 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     self.wantsLayer = YES;
     self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
     self.renderer = [[NMLayerScene alloc] initWithRoot:self.layer];
+    self.frostView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0,0,240,60)];
+    self.frostView.material = NSVisualEffectMaterialHUDWindow;
+    self.frostView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+    self.frostView.state = NSVisualEffectStateActive;
+    self.frostView.alphaValue = 0.55;
+    self.frostView.wantsLayer = YES;
+    self.frostView.layer.cornerRadius = 12;
+    self.frostView.layer.masksToBounds = YES;
+    self.frostView.hidden = YES;
     self.renderedScene = -1;
     NSBundle *bundle = NSBundle.mainBundle;
     NSString *woodfishPath = [bundle pathForResource:@"woodfish" ofType:@"png"];
@@ -1040,6 +1050,18 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   CGFloat encouragerHeight=(!self.previewOnly && self.controller.progressActive) ? kEncouragerRegionHeight : 0;
   [self.renderer layoutWithScale:self.controller.uiScale backing:self.window.backingScaleFactor ?: 2
                    offworkHeight:offworkHeight encouragerHeight:encouragerHeight preview:self.previewOnly];
+  { // 毛玻璃底片：覆盖文字区(底部条带)，居中、不盖章木鱼
+    const CGFloat __ui = self.controller.uiScale;
+    const CGFloat __bot = (offworkHeight + encouragerHeight) * __ui;
+    const BOOL __show = (__bot > 4.0) && !self.previewOnly;
+    self.frostView.hidden = !__show;
+    if (__show) {
+      const CGFloat __W = NSWidth(self.bounds);
+      const CGFloat __m = 10.0 * __ui;
+      self.frostView.frame = NSMakeRect(__m, 0, __W - 2*__m, __bot);
+      self.frostView.layer.cornerRadius = 10.0 * __ui;
+    }
+  }
   [self.renderer setCounter:[NSString stringWithFormat:@"%lld",self.controller.todayTotal]
                       label:self.controller.offworkDisplayLabel duration:self.controller.offworkDisplayDuration];
   // FB7：主信息为「今日已赚」时启用逐帧连续里程表；否则用普通数字层显示倒计时等文本。
@@ -1242,7 +1264,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   [ctx restoreGraphicsState];
   if (!self.previewOnly && controller.offworkEnabled) {
     NSColor *color = NMUiMeritGold();
-    [self drawCenteredText:controller.offworkDisplayLabel ?: UiText(@"距下班", @"Until off work")
+    [self drawCenteredText:controller.offworkDisplayLabel ?: UiText(@"距下班", @"Off-work countdown")
                      rect:NSMakeRect(0, 55, kWindowWidth, 28)
                      font:[NSFont systemFontOfSize:24 weight:NSFontWeightMedium]
                     color:color];
@@ -1398,7 +1420,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   self.offworkLastSampleUptime = uptime;
   self.offworkIsOvertime = next.overtime;
   self.offworkDisplayLabel = next.overtime ? UiText(@"已加班", @"Overtime")
-                                          : UiText(@"距下班", @"Until off work");
+                                          : UiText(@"距下班", @"Off-work countdown");
   self.offworkDisplayDuration = OffworkDurationText(next.overtime ? next.overtimeSeconds : next.remainingSeconds);
   if (next.overtime && next.overtimeSeconds > 0) {
     self.offworkDailySnapshots[key] = @{
@@ -1447,7 +1469,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   const auto off = niuma::EvaluateOffwork(now, (int)self.offworkHour, (int)self.offworkMinute);
   NSString *countdownValue = off.valid
       ? OffworkDurationText(off.overtime ? off.overtimeSeconds : off.remainingSeconds) : @"--:--:--";
-  NSString *countdownLabel = off.overtime ? UiText(@"已加班", @"Overtime") : UiText(@"距下班", @"Until off work");
+  NSString *countdownLabel = off.overtime ? UiText(@"已加班", @"Overtime") : UiText(@"距下班", @"Off-work countdown");
   // 已赚读数（复用 FB8 工时联动 + 1e-5 元刻度；屏幕金额走 FB7 连续里程表）。
   const BOOL wageValid = self.encouragerDailyWageMinor > 0 && window.Valid();
   NSString *code = self.encouragerCurrency.length ? self.encouragerCurrency : @"CNY";
@@ -1590,7 +1612,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)showOffworkSettings:(id)sender {
   (void)sender;
   if (!self.offworkSettingsWindow) {
-    self.offworkSettingsWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 440, 290)
+    self.offworkSettingsWindow = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 500, 290)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         backing:NSBackingStoreBuffered defer:NO];
     self.offworkSettingsWindow.title = UiText(@"下班倒计时", @"Off-work Countdown");
@@ -1600,13 +1622,13 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     NSView *content = self.offworkSettingsWindow.contentView;
     self.offworkEnableControl = [NSButton checkboxWithTitle:UiText(@"启用下班倒计时", @"Enable off-work countdown")
         target:self action:@selector(offworkEnableChanged:)];
-    self.offworkEnableControl.frame = NSMakeRect(24, 240, 392, 26);
+    self.offworkEnableControl.frame = NSMakeRect(24, 240, 452, 26);
     [content addSubview:self.offworkEnableControl];
     NSTextField *label = [NSTextField labelWithString:UiText(@"下班时间（24小时制）", @"Off-work time (24-hour)")];
-    label.frame = NSMakeRect(24, 196, 214, 24);
+    label.frame = NSMakeRect(24, 196, 250, 24);
     [content addSubview:label];
-    self.offworkHourControl = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(244, 192, 70, 28) pullsDown:NO];
-    self.offworkMinuteControl = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(336, 192, 70, 28) pullsDown:NO];
+    self.offworkHourControl = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(286, 192, 70, 28) pullsDown:NO];
+    self.offworkMinuteControl = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(376, 192, 70, 28) pullsDown:NO];
     for (NSInteger hour = 0; hour < 24; ++hour)
       [self.offworkHourControl addItemWithTitle:[NSString stringWithFormat:@"%02ld", (long)hour]];
     for (NSInteger minute = 0; minute < 60; ++minute)
@@ -1616,22 +1638,22 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
     [content addSubview:self.offworkHourControl];
     [content addSubview:self.offworkMinuteControl];
     NSTextField *colon = [NSTextField labelWithString:@":"];
-    colon.frame = NSMakeRect(319, 197, 12, 22);
+    colon.frame = NSMakeRect(360, 197, 12, 22);
     [content addSubview:colon];
     NSTextField *explanation = [NSTextField wrappingLabelWithString:UiText(
         @"每天按本地下班时间重新计算，超过即为加班。开启时自动保存当天加班快照，关闭保留历史。仅本地运行，不需要输入监控权限，不判断实际劳动或离岗时间。",
         @"Recalculates daily using local time. Time past your target is overtime. While enabled, daily snapshots are saved; disabling keeps history. Local only, no Input Monitoring needed. This is not work or attendance detection.")];
-    explanation.frame = NSMakeRect(24, 66, 392, 108);
+    explanation.frame = NSMakeRect(24, 66, 452, 108);
     explanation.font = [NSFont systemFontOfSize:13];
     [content addSubview:explanation];
     NSButton *cancel = [NSButton buttonWithTitle:UiText(@"取消", @"Cancel")
         target:self action:@selector(cancelOffworkSettings:)];
-    cancel.frame = NSMakeRect(232, 20, 88, 30);
+    cancel.frame = NSMakeRect(244, 20, 112, 30);
     cancel.keyEquivalent = @"\033";
     [content addSubview:cancel];
     NSButton *save = [NSButton buttonWithTitle:UiText(@"保存", @"Save")
         target:self action:@selector(saveOffworkSettings:)];
-    save.frame = NSMakeRect(328, 20, 88, 30);
+    save.frame = NSMakeRect(366, 20, 112, 30);
     save.keyEquivalent = @"\r";
     [content addSubview:save];
     NMUiWindow(self.offworkSettingsWindow);
@@ -3139,7 +3161,14 @@ static NSString *NMCultivationTitle(int level) {
                                               backing:NSBackingStoreBuffered
                                                 defer:NO];
   self.window.releasedWhenClosed = NO;
-  self.window.contentView = self.view;
+  NSView *__container = [[NSView alloc] initWithFrame:self.view.frame];
+  __container.wantsLayer = YES;
+  __container.layer.backgroundColor = NSColor.clearColor.CGColor;
+  self.view.frame = __container.bounds;
+  self.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+  [__container addSubview:self.view.frostView];
+  [__container addSubview:self.view];
+  self.window.contentView = __container;
   self.window.backgroundColor = NSColor.clearColor;
   self.window.opaque = NO;
   self.window.hasShadow = NO;

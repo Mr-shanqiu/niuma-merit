@@ -172,7 +172,7 @@
 - (instancetype)init {
   if ((self = [super init])) {
     _fontSize = 26.0;
-    _numberColor = [NSColor colorWithCalibratedRed:.78 green:.39 blue:.12 alpha:1];
+    _numberColor = [NSColor colorWithCalibratedRed:.95 green:.72 blue:.33 alpha:1];
     self.masksToBounds = NO;
   }
   return self;
@@ -417,9 +417,9 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     _feedbackTemplate=[CAKeyframeAnimation animationWithKeyPath:@"opacity"];
     _feedbackTemplate.values=@[@0,@1,@0,@0];_feedbackTemplate.keyTimes=@[@0,@.30,@.70,@1];
     _feedbackTemplate.calculationMode=kCAAnimationDiscrete;
-    _offworkLabel = NMSceneText(CGRectMake(0,55,240,28),24,NSColor.orangeColor);
-    _offworkDuration = [NMNumberLayer layer];_offworkDuration.frame=CGRectMake(0,14,240,35);
-    _encouragerLabel = NMSceneText(CGRectMake(0,0,240,22),15,NSColor.orangeColor);
+    _offworkLabel = NMSceneText(CGRectMake(0,55,240,28),24,[NSColor colorWithCalibratedRed:.95 green:.72 blue:.33 alpha:1]);
+    _offworkDuration = [NMNumberLayer layer];_offworkDuration.frame=CGRectMake(0,14,240,40);
+    _encouragerLabel = NMSceneText(CGRectMake(0,0,240,28),20,[NSColor colorWithCalibratedRed:.95 green:.72 blue:.33 alpha:1]);
     _encouragerAmount = [NMNumberLayer layer];
     _encouragerAmount.frame = CGRectMake(0,0,240,30);
     _encouragerAmount.rollEnabled = YES;  // FB2 数字跳动动效（倒计时主信息用）
@@ -507,14 +507,14 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     self.counter.hidden=preview; self.feedback.hidden=preview;
     // 下班倒计时区域：位于鼓励器区域之上（若两者同开）。
     self.offworkLabel.frame=CGRectMake(0,encouragerHeight+55,240,28);
-    self.offworkDuration.frame=CGRectMake(0,encouragerHeight+14,240,35);
+    self.offworkDuration.frame=CGRectMake(0,encouragerHeight+14,240,40);
     self.offworkLabel.hidden=preview || offworkHeight==0;
     self.offworkDuration.hidden=preview || offworkHeight==0;
     // 鼓励器区域：最底部 84pt。FB13：顶部进度条 + 主信息 + 副信息。
     self.encouragerBarBack.frame=CGRectMake(20,encouragerHeight-12,200,8);
     self.encouragerAmount.frame=CGRectMake(0,encouragerHeight-46,240,30);
     self.encouragerOdometer.frame=CGRectMake(0,encouragerHeight-46,240,30);
-    self.encouragerLabel.frame=CGRectMake(0,encouragerHeight-72,240,22);
+    self.encouragerLabel.frame=CGRectMake(0,encouragerHeight-78,240,28);
     const BOOL showEnc = !preview && encouragerHeight>0;
     self.encouragerVisible=showEnc;
     self.encouragerLabel.hidden=!showEnc;
@@ -535,21 +535,21 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
   (void)width;
 }
 - (void)setCounter:(NSString *)counter label:(NSString *)label duration:(NSString *)duration {
-  NSColor *color=[NSColor colorWithCalibratedRed:.78 green:.39 blue:.12 alpha:1];
+  NSColor *color=[NSColor colorWithCalibratedRed:.95 green:.72 blue:.33 alpha:1];
   NMNoImplicit(^{
     if([self.counter updateText:counter size:counter.length>18?22:26 color:color]) self.textUpdates++;
-    if([self.offworkDuration updateText:duration size:24 color:color]) self.textUpdates++;
+    if([self.offworkDuration updateText:duration size:30 color:color]) self.textUpdates++;
     NSString *old=[self.offworkLabel.string isKindOfClass:NSAttributedString.class] ? [self.offworkLabel.string string] : self.offworkLabel.string;
     if(![old isEqual:label ?: @""]) { NMSetSceneText(self.offworkLabel,label,24,color);self.textUpdates++; }
   });
 }
 - (void)setEncouragerLabel:(NSString *)label amount:(NSString *)amount progress:(double)progress visible:(BOOL)visible {
-  NSColor *color=[NSColor colorWithCalibratedRed:.78 green:.39 blue:.12 alpha:1];
+  NSColor *color=[NSColor colorWithCalibratedRed:.95 green:.72 blue:.33 alpha:1];
   self.encouragerProgress = progress;
   self.encouragerVisible = visible;
   NMNoImplicit(^{
     NSString *oldLabel=[self.encouragerLabel.string isKindOfClass:NSAttributedString.class] ? [self.encouragerLabel.string string] : self.encouragerLabel.string;
-    if(![oldLabel isEqual:label ?: @""]) { NMSetSceneText(self.encouragerLabel,label,15,color);self.textUpdates++; }
+    if(![oldLabel isEqual:label ?: @""]) { NMSetSceneText(self.encouragerLabel,label,20,color);self.textUpdates++; }
     // 里程表激活时金额由 NMOdometerLayer 逐帧绘制；此处只维护倒计时等文本金额。
     if (!self.encouragerOdometerActive) {
       NSString *oldAmount = self.encouragerAmount.text ?: @"";
