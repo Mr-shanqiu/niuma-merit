@@ -58,10 +58,7 @@
   if(!glyph.length || self.glyphs[glyph]) return;
   const CGFloat scale=MAX(1,self.atlasScale);
   NSFont *font=[NSFont monospacedDigitSystemFontOfSize:self.atlasSize weight:NSFontWeightRegular];
-  NSShadow *shadow=[NSShadow new];shadow.shadowColor=[NSColor colorWithWhite:0 alpha:.8];
-  shadow.shadowOffset=NSMakeSize(0,-1);shadow.shadowBlurRadius=2;
-  NSDictionary *attributes=@{NSFontAttributeName:font,NSForegroundColorAttributeName:self.atlasColor,
-    NSStrokeColorAttributeName:[NSColor colorWithWhite:0 alpha:.7],NSStrokeWidthAttributeName:@(-2.5),NSShadowAttributeName:shadow};
+  NSDictionary *attributes=@{NSFontAttributeName:font,NSForegroundColorAttributeName:self.atlasColor};
   CGFloat advance=[glyph sizeWithAttributes:@{NSFontAttributeName:font}].width;
   NSInteger width=(NSInteger)ceil((advance+8)*scale),height=(NSInteger)ceil(40*scale);
   if(width<1) width=1;
@@ -343,6 +340,7 @@
 @property(nonatomic) CGFloat layoutBacking;
 @property(nonatomic) CGFloat layoutOffset;
 @property(nonatomic) BOOL layoutPreview;
+@property(nonatomic) CGFloat artworkShiftX;  // 形象主体水平居中校正(A)
 @property(nonatomic) BOOL layoutValid;
 @property(nonatomic) NSUInteger sceneGeneration;
 @property(nonatomic) NSUInteger sceneBuilds;
@@ -398,15 +396,12 @@ static CATextLayer *NMSceneText(CGRect frame, CGFloat size, NSColor *color) {
   CATextLayer *layer = [CATextLayer layer]; layer.frame = frame;
   layer.fontSize = size; layer.alignmentMode = kCAAlignmentCenter;
   layer.foregroundColor = color.CGColor;
-  layer.shadowColor = NSColor.blackColor.CGColor; layer.shadowOpacity = .8;
-  layer.shadowOffset = CGSizeMake(0,-1); layer.shadowRadius = 2;
   return layer;
 }
 static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NSColor *color) {
   layer.string = value.length ? [[NSAttributedString alloc] initWithString:value attributes:@{
     NSFontAttributeName:[NSFont monospacedDigitSystemFontOfSize:size weight:NSFontWeightRegular],
-    NSForegroundColorAttributeName:color,
-    NSStrokeColorAttributeName:[NSColor colorWithWhite:0 alpha:.7], NSStrokeWidthAttributeName:@(-2.5)
+    NSForegroundColorAttributeName:color
   }] : nil;
 }
 @implementation NMLayerScene
@@ -432,7 +427,7 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     _encouragerOdometer.frame = CGRectMake(0,0,240,30);
     _encouragerOdometer.hidden = YES;
     _encouragerBarBack = [CALayer layer];
-    _encouragerBarBack.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:.18].CGColor;
+    _encouragerBarBack.backgroundColor = [NSColor colorWithCalibratedWhite:0 alpha:.35].CGColor;
     _encouragerBarBack.cornerRadius = 4;
     _encouragerBarFill = [CALayer layer];
     _encouragerBarFill.backgroundColor = NSColor.orangeColor.CGColor;
@@ -445,6 +440,11 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
 }
 - (void)installLayers:(NSArray<NSDictionary *> *)layers images:(NSDictionary<NSString *,NSImage *> *)images {
   [self stop]; self.sceneGeneration++; self.sceneBuilds++;
+  // A：按“面积最大的形象层”的水平中心作为主体锚点，校正整幅形象居中（适配任意形象）。
+  { double bestArea=-1, anchorX=120.0;
+    for (NSDictionary *d in layers){ NSArray *f=d[@"frame"]; double w=[f[2] doubleValue], h=[f[3] doubleValue];
+      if (w*h>bestArea){ bestArea=w*h; anchorX=[f[0] doubleValue]+w/2.0; } }
+    self.artworkShiftX = 120.0 - anchorX; }
   NMNoImplicit(^{ self.artwork.sublayers = nil; });
   NSMutableArray *nodes = [NSMutableArray array];
   for (NSDictionary *descriptor in layers) {
@@ -468,6 +468,7 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
     [nodes addObject:@[position,rotation,scale,stretch]];
   }
   self.descriptors=layers; self.nodes=nodes; [self applyRestPose];
+  { CGRect af=self.artwork.frame; af.origin.x=self.artworkShiftX; self.artwork.frame=af; }
   NSMutableArray *templates=[NSMutableArray array];
   [self.nodes enumerateObjectsUsingBlock:^(NSArray<CALayer *> *node,NSUInteger i,BOOL *) {
     NSDictionary *d=self.descriptors[i];NSArray *r=d[@"frame"],*a=d[@"anchor"];
@@ -500,7 +501,7 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
   NMNoImplicit(^{
     self.root.affineTransform=CGAffineTransformMakeScale(scale,scale);
     self.root.bounds=CGRectMake(0,0,240,250+bottom);
-    self.artwork.frame=CGRectMake(0,bottom,240,170);
+    self.artwork.frame=CGRectMake(self.artworkShiftX,bottom,240,170);
     self.counter.frame=CGRectMake(0,210+bottom,240,40);
     self.feedback.frame=CGRectMake(0,174+bottom,240,30);
     self.counter.hidden=preview; self.feedback.hidden=preview;

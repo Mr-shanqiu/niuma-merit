@@ -4407,8 +4407,7 @@ static NSString *NMCultivationTitle(int level) {
   (void)sender;
   [self ensureCurrentDay];
   if (!self.calendarWindow) {
-    // FB1：功德日历窗口同时容纳「日曆 / 曲線」两个视图，尺寸取两者较大者，
-    // 切换时窗口位置不变（同一窗口、同一 frame，仅切换可见页）。
+    // 功德日历窗口（曲线模块已移除，D27：仅日历视图、占满窗口）。
     NSRect frame = NSMakeRect(0, 0, 760, 724);
     NSView *root = [[NSView alloc] initWithFrame:frame];
     self.calendarWindow = [[NSWindow alloc] initWithContentRect:frame
@@ -4421,21 +4420,9 @@ static NSString *NMCultivationTitle(int level) {
     NMUiWindow(self.calendarWindow);
     self.calendarWindow.backgroundColor = NSColor.whiteColor;
 
-    // 顶部分段控件：日曆 / 曲線。
-    NSSegmentedControl *mode = [NSSegmentedControl
-        segmentedControlWithLabels:@[ UiText(@"日历", @"Calendar"), UiText(@"曲线", @"Curve") ]
-                     trackingMode:NSSegmentSwitchTrackingSelectOne
-                           target:self
-                           action:@selector(calendarModeChanged:)];
-    mode.frame = NSMakeRect(24, NSHeight(frame) - 40, 200, 28);
-    mode.selectedSegment = 0;
-    mode.autoresizingMask = NSViewMinYMargin;
-    mode.accessibilityLabel = UiText(@"日历视图切换", @"Calendar view switcher");
-    self.calendarModeControl = mode;
-    [root addSubview:mode];
 
     // ---- 日历页 ----
-    NSView *calendarPage = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 760, NSHeight(frame) - 48)];
+    NSView *calendarPage = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 760, NSHeight(frame))];
     calendarPage.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.calendarPageView = calendarPage;
     [root addSubview:calendarPage];
@@ -4459,31 +4446,6 @@ static NSString *NMCultivationTitle(int level) {
     [self.calendarView addSubview:next];
     [calendarPage addSubview:self.calendarView];
 
-    // ---- 曲线页（沿用原独立窗口的曲线视图与控件）----
-    NSView *curvePage = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 760, NSHeight(frame) - 48)];
-    curvePage.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    curvePage.hidden = YES;
-    self.curvePageView = curvePage;
-    [root addSubview:curvePage];
-    self.curveView = [[NMCurveView alloc] initWithFrame:NSMakeRect(0, 0, 760, NSHeight(frame) - 48 - 44)];
-    self.curveView.controller = self;
-    self.curveView.mode = 0;
-    self.curveView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    [curvePage addSubview:self.curveView];
-    NSSegmentedControl *segments = [NSSegmentedControl
-        segmentedControlWithLabels:@[ UiText(@"日", @"Day"), UiText(@"周", @"Week"),
-                                      UiText(@"月", @"Month") ]
-                     trackingMode:NSSegmentSwitchTrackingSelectOne
-                           target:self
-                           action:@selector(curveModeChanged:)];
-    // FB9：日/周/月分段控件放在独立顶部头条带，曲线视图下移让出空间，避免统计数值压住 tab。
-    segments.frame = NSMakeRect(24, NSHeight(frame) - 48 - 36, 260, 28);
-    segments.selectedSegment = 0;
-    segments.autoresizingMask = NSViewMinYMargin;
-    segments.accessibilityLabel = UiText(@"曲线视图", @"Curve view");
-    self.curveModeControl = segments;
-    [curvePage addSubview:segments];
-    // FB12：删除「导出分享图…」按钮（用户不需要导出分享图；日/周/月那行右侧留空）。
 
     [self.calendarWindow center];
   }
