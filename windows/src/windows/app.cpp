@@ -4583,41 +4583,50 @@ INT_PTR CALLBACK AboutDialogProcedure(HWND window, UINT message,
 
 void ShowAboutDialog(HWND owner) {
   const std::wstring version = NIUMA_APP_VERSION_W;
+  const bool mainland = niuma::ui::CurrentLanguage() == niuma::ui::Language::SimplifiedChinese;
   std::wstring text = UiText(L"牛马电子功德 v", L"NiuMa Merit v") + version;
-  text += UiText(
-      L"\n\n只统计按键、鼠标按键和滚轮手势发生的次数，不读取具体内容、鼠标位置或窗口信息。\n本软件不包含网络请求、遥测或自动更新。\n\n官方网站：\n",
-      L"\n\nCounts keyboard presses, mouse button presses, and scroll distance without reading specific content, mouse positions, or window information.\nThe app contains no network requests, telemetry, or automatic updates.\n\nOfficial website:\n");
+  text += L"\n\n";
+  text += UiText(L"只统计按键和鼠标点击次数，滚动按距离折算；不读取输入内容或鼠标位置。\n本软件不包含网络请求、遥测或自动更新。\n\n官方网站：\n",
+                 L"Counts key presses and mouse clicks; scrolling is estimated by distance. Does not read typed content or mouse position.\nNo network requests, telemetry, or automatic updates.\n\nOfficial website:\n");
   text += L"https://gongde.zqscreen.cn/";
-  text += UiText(L"\n\n如未正常计数，可联系开发者，或扫描下方抖音码进粉丝群寻求帮助。",
-                L"\n\nIf input is not being counted, contact the developer or scan the Douyin code below to join the fan group for help.");
+  if (mainland) {
+    text += UiText(L"如未正常计数，可联系开发者，或扫描下方抖音码进粉丝群寻求帮助。",
+                   L"\n\nIf input is not being counted, contact the developer or scan the Douyin code below to join the fan group for help.");
+  } else {
+    text += UiText(L"购买与授权：\n本软件通过 Paddle 提供购买与授权（Paddle 为授权与收款服务商）。\n\n开源仓库：\nhttps://github.com/shanqiuwong/niuma-merit\n\n更多帮助请见官网：\nhttps://gongde.zqscreen.cn/",
+                   L"\n\nPurchase & licence:\nThis app is sold and licensed via Paddle (our licensing and payment provider).\n\nOpen-source:\nhttps://github.com/shanqiuwong/niuma-merit\n\nMore help on the website:\nhttps://gongde.zqscreen.cn/");
+  }
   AboutDialogState state;
   state.text = text;
   const HMODULE module = GetModuleHandleW(nullptr);
-  const HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(110), RT_RCDATA);
-  const DWORD size = resource ? SizeofResource(module, resource) : 0;
-  const HGLOBAL loaded = resource ? LoadResource(module, resource) : nullptr;
-  const void* bytes = loaded ? LockResource(loaded) : nullptr;
-  if (bytes && size != 0) {
-    const HGLOBAL buffer = GlobalAlloc(GMEM_MOVEABLE, size);
-    void* destination = buffer ? GlobalLock(buffer) : nullptr;
-    if (destination) {
-      CopyMemory(destination, bytes, size);
-      GlobalUnlock(buffer);
-      if (SUCCEEDED(CreateStreamOnHGlobal(buffer, TRUE, &state.douyin.stream))) {
-        state.douyin.image.reset(Gdiplus::Image::FromStream(state.douyin.stream));
-        if (state.douyin.image && state.douyin.image->GetLastStatus() != Gdiplus::Ok) {
-          state.douyin.image.reset();
+  if (mainland) {
+    const HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(110), RT_RCDATA);
+    const DWORD size = resource ? SizeofResource(module, resource) : 0;
+    const HGLOBAL loaded = resource ? LoadResource(module, resource) : nullptr;
+    const void* bytes = loaded ? LockResource(loaded) : nullptr;
+    if (bytes && size != 0) {
+      const HGLOBAL buffer = GlobalAlloc(GMEM_MOVEABLE, size);
+      void* destination = buffer ? GlobalLock(buffer) : nullptr;
+      if (destination) {
+        CopyMemory(destination, bytes, size);
+        GlobalUnlock(buffer);
+        if (SUCCEEDED(CreateStreamOnHGlobal(buffer, TRUE, &state.douyin.stream))) {
+          state.douyin.image.reset(Gdiplus::Image::FromStream(state.douyin.stream));
+          if (state.douyin.image && state.douyin.image->GetLastStatus() != Gdiplus::Ok) {
+            state.douyin.image.reset();
+          }
+        } else {
+          GlobalFree(buffer);
         }
-      } else {
+      } else if (buffer) {
         GlobalFree(buffer);
       }
-    } else if (buffer) {
-      GlobalFree(buffer);
     }
   }
   if (DialogBoxParamW(module, MAKEINTRESOURCEW(3000), owner,
                       AboutDialogProcedure, reinterpret_cast<LPARAM>(&state)) == -1) {
-    const std::wstring fallback = text + L"\n\nhttps://gongde.zqscreen.cn/help-windows.html\n\n" + AboutDouyinCaption();
+    std::wstring fallback = text + L"\n\nhttps://gongde.zqscreen.cn/help-windows.html";
+    if (mainland) fallback += L"\n\n" + AboutDouyinCaption();
     niuma::ui::Message(owner, fallback.c_str(), UiText(L"关于牛马电子功德", L"About NiuMa Merit"),
                 MB_OK | MB_ICONINFORMATION);
   }
@@ -6130,7 +6139,6 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
   append(kMenuAutoHide, UiText(L"全屏或最大化时自动隐身", L"Auto-hide in Fullscreen or Maximized"), L"\xE740", gVisibility.autoHideFullscreen);
   append(kMenuAppearance, UiText(L"更换形象", L"Change Appearance"), L"\xE77B");
   append(kMenuCalendar, UiText(L"功德日历…", L"Merit Calendar…"), L"\xE787");
-  append(kMenuCurve, UiText(L"牛马曲线…", L"Merit Curve…"), L"\xE9D2");
   append(kMenuMedals, UiText(L"勋章与成就…", L"Medals & Achievements…"), L"\xE735");
   append(kMenuEncourager, UiText(L"上班鼓励器…", L"Work Encourager…"), L"\xE8C7", gState.encouragerActive);
   append(kMenuAppearanceScale, UiText(L"形象大小…", L"Appearance Size…"), L"\xE7A1");
@@ -6192,8 +6200,7 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
     ShowAppearancePicker(window);
   } else if (command == static_cast<int>(kMenuCalendar)) {
     ShowMeritCalendar(window);
-  } else if (command == static_cast<int>(kMenuCurve)) {
-    ShowMeritCurve(window);
+  
   } else if (command == static_cast<int>(kMenuMedals)) {
     ShowMedals(window);
   } else if (command == static_cast<int>(kMenuEncourager)) {
