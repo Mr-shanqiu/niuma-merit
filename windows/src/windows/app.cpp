@@ -5984,16 +5984,12 @@ void ImportOfficialMessages(HWND owner, const std::wstring& filename) {
   if (result.status == niuma::reminder::CatalogInstallStatus::Installed ||
       result.status == niuma::reminder::CatalogInstallStatus::AlreadyInstalled) {
     gState.reminderCatalog = result.catalog;
-    size_t chinese = 0, english = 0;
-    for (const auto& item : gState.reminderCatalog->items) {
-      if (std::strcmp(item.language, "zh-CN") == 0) ++chinese;
-      else if (std::strcmp(item.language, "en") == 0) ++english;
-    }
+    size_t total = gState.reminderCatalog->items.size();
     wchar_t message[256]{};
     swprintf_s(message, std::size(message), UiText(
-        L"文案库版本 %u 已就绪（中文 %zu 条，英文 %zu 条）。提醒历史保持不变。",
-        L"Message catalog version %u is ready (%zu Chinese, %zu English). Reminder history is unchanged."),
-        gState.reminderCatalog->content_version, chinese, english);
+        L"文案库版本 %u 已就绪（共 %zu 条内容）。提醒历史保持不变。",
+        L"Message catalog version %u is ready (%zu items in total). Reminder history is unchanged."),
+        gState.reminderCatalog->content_version, total);
     niuma::ui::Message(owner, message, UiText(L"文案包已导入", L"Messages Imported"),
         MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
     return;
