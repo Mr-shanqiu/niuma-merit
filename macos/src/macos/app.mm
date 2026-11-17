@@ -3677,11 +3677,17 @@ static NSString *NMCultivationTitle(int level) {
       NSCalendarUnitDay | NSCalendarUnitHour | NSCalendarUnitMinute) fromDate:now];
   niuma::reminder::SelectionContext context;
   context.locale = NMReminderLocale();
+  // 0.9.6: pass the real two-letter ISO-2 region so country-specific festivals
+  // can match. Unknown/unavailable region stays "*" (generic items only).
   NSString *country = NSLocale.currentLocale.countryCode.uppercaseString ?: @"";
-  static NSSet<NSString *> *supportedRegions;
-  static dispatch_once_t regionOnce;
-  dispatch_once(&regionOnce, ^{ supportedRegions = [NSSet setWithArray:@[@"US", @"GB", @"CA", @"AU", @"NZ", @"IE"]]; });
-  context.region = [supportedRegions containsObject:country] ? country.UTF8String : "*";
+  bool validRegion = country.length == 2;
+  if (validRegion) {
+    for (NSUInteger i = 0; i < country.length; ++i) {
+      unichar c = [country characterAtIndex:i];
+      if (c < 'A' || c > 'Z') { validRegion = false; break; }
+    }
+  }
+  context.region = validRegion ? country.UTF8String : "*";
   context.trigger = trigger == niuma::reminder::ActivitySampler::Trigger::HighIntensity ? 2U : 1U;
   context.overtime = self.offworkEnabled && !self.offworkSuspended && self.offworkHasSnapshot
       ? (self.offworkIsOvertime ? niuma::reminder::Overtime::Yes : niuma::reminder::Overtime::No)
@@ -4354,16 +4360,11 @@ static NSString *NMCultivationTitle(int level) {
   if (result.status == niuma::reminder::CatalogInstallStatus::Installed ||
       result.status == niuma::reminder::CatalogInstallStatus::AlreadyInstalled) {
     _reminderCatalog = result.catalog;
-    std::size_t chinese = 0, english = 0;
-    for (const auto& item : _reminderCatalog->items) {
-      if (std::strcmp(item.language, "zh-CN") == 0) ++chinese;
-      else if (std::strcmp(item.language, "en") == 0) ++english;
-    }
+    std::size_t total = _reminderCatalog->items.size();
     NSString *message = [NSString stringWithFormat:
-        UiText(@"文案库版本 %u 已就绪（中文 %lu 条，英文 %lu 条）。提醒历史保持不变。",
-               @"Message catalog version %u is ready (%lu Chinese, %lu English). Reminder history is unchanged."),
-        _reminderCatalog->content_version, static_cast<unsigned long>(chinese),
-        static_cast<unsigned long>(english)];
+        UiText(@"文案库版本 %u 已就绪（共 %lu 条内容）。提醒历史保持不变。",
+               @"Message catalog version %u is ready (%lu items in total). Reminder history is unchanged."),
+        _reminderCatalog->content_version, static_cast<unsigned long>(total)];
     NSAlert *alert = [[NMUiAlert alloc] init];
     alert.messageText = UiText(@"文案包已导入", @"Messages Imported");
     alert.informativeText = message;
@@ -4751,7 +4752,7 @@ static NSString *NMCultivationTitle(int level) {
   if (mainland) {
     aboutText = [NSString stringWithFormat:UiText(
         @"版本 %@\n\n"
-         @"只统计按键、鼠标按键和滚轮手势发生的次数，不读取输入内容或鼠标位置。全屏隐身仅判断窗口是否覆盖屏幕，不保存应用或窗口信息。\n"
+         @"只统计按键和鼠标点击次数，滚动按距离折算；不读取输入内容或鼠标位置。全屏隐身仅判断窗口是否覆盖屏幕，不保存应用或窗口信息。\n"
          @"本软件不包含网络请求、遥测或自动更新。\n\n"
          @"在其他应用中计数，需要允许本应用使用“输入监控”。\n"
          @"如仍未正常计数，可联系开发者或扫码进粉丝群寻求帮助。\n"
@@ -4776,7 +4777,7 @@ static NSString *NMCultivationTitle(int level) {
   } else {
     aboutText = [NSString stringWithFormat:UiText(
         @"版本 %@\n\n"
-         @"只统计按键、鼠标按键和滚轮手势发生的次数，不读取输入内容或鼠标位置。全屏隐身仅判断窗口是否覆盖屏幕，不保存应用或窗口信息。\n"
+         @"只统计按键和鼠标点击次数，滚动按距离折算；不读取输入内容或鼠标位置。全屏隐身仅判断窗口是否覆盖屏幕，不保存应用或窗口信息。\n"
          @"本软件不包含网络请求、遥测或自动更新。\n\n"
          @"在其他应用中计数，需要允许本应用使用“输入监控”。\n"
          @"如仍未正常计数，可联系支持邮箱寻求帮助。\n"
