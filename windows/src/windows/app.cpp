@@ -4626,7 +4626,7 @@ void ShowAboutDialog(HWND owner) {
   if (DialogBoxParamW(module, MAKEINTRESOURCEW(3000), owner,
                       AboutDialogProcedure, reinterpret_cast<LPARAM>(&state)) == -1) {
     std::wstring fallback = text + L"\n\nhttps://gongde.zqscreen.cn/help-windows.html";
-    if (mainland) fallback += L"\n\n" + AboutDouyinCaption();
+    if (mainland) { fallback += L"\n\n"; fallback += AboutDouyinCaption(); }
     niuma::ui::Message(owner, fallback.c_str(), UiText(L"关于牛马电子功德", L"About NiuMa Merit"),
                 MB_OK | MB_ICONINFORMATION);
   }
