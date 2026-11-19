@@ -214,7 +214,7 @@ bool Draw(Gdiplus::Graphics& graphics, WidgetTextSlot slot, const TextKey& key, 
     }
     if (slot == WidgetTextSlot::Encourager) {
         // 底栏设计坐标：offwork 段（256..330）之后为鼓励器段（336..508）。
-        if (!FillRoundedPanel(graphics, Gdiplus::RectF(8, 338, 224, 98), 14, Gdiplus::Color(72, 28, 28, 34))) return false;
+        if (!FillRoundedPanel(graphics, Gdiplus::RectF(8, 338, 224, 98), 14, Gdiplus::Color(48, 28, 28, 34))) return false;
         if (!DrawWidget(graphics, key, key.first, {12, 340, 216, 26},
                 key.firstSize, key.firstColor, glyphs, true)) return false;
         if (!DrawWidget(graphics, key, key.second, {12, 366, 216, 42},
@@ -230,7 +230,7 @@ bool Draw(Gdiplus::Graphics& graphics, WidgetTextSlot slot, const TextKey& key, 
         }
         return true;
     }
-    if (!FillRoundedPanel(graphics, Gdiplus::RectF(8, 257, 224, 72), 14, Gdiplus::Color(72, 28, 28, 34))) return false;
+    if (!FillRoundedPanel(graphics, Gdiplus::RectF(8, 257, 224, 72), 14, Gdiplus::Color(48, 28, 28, 34))) return false;
     if (!DrawWidget(graphics, key, key.first, {12, 258, 216, 28}, key.firstSize, key.firstColor, glyphs, true)) return false;
     constexpr float cellWidth = 17;
     const float left = (240 - cellWidth * static_cast<float>(key.second.size())) / 2;
