@@ -27,7 +27,7 @@ struct WidgetTextStyle {
     std::uint32_t labelColor = 0xfff2b854;
     std::uint32_t durationColor = 0xfff2b854;
     std::uint32_t outlineColor = 0xbe181818;
-    float outlineWidth = 1.5f;
+    float outlineWidth = 0.0f;
     float meritFont = 26, longMeritFont = 22, longestMeritFont = 18;
     float plusFont = 22, labelFont = 20, durationFont = 24;
     int widgetFontStyle = 0; // Gdiplus::FontStyleRegular

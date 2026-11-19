@@ -171,17 +171,33 @@ public:
         return entries_.back().path.get();
     }
 };
+bool FillRoundedPanel(Gdiplus::Graphics& graphics, const Gdiplus::RectF& r, float radius, Gdiplus::Color color) {
+    Gdiplus::GraphicsPath path;
+    const float d = radius * 2.0f;
+    if (path.AddArc(r.X, r.Y, d, d, 180, 90) != Gdiplus::Ok ||
+        path.AddArc(r.X + r.Width - d, r.Y, d, d, 270, 90) != Gdiplus::Ok ||
+        path.AddArc(r.X + r.Width - d, r.Y + r.Height - d, d, d, 0, 90) != Gdiplus::Ok ||
+        path.AddArc(r.X, r.Y + r.Height - d, d, d, 90, 90) != Gdiplus::Ok ||
+        path.CloseFigure() != Gdiplus::Ok) return false;
+    Gdiplus::SolidBrush brush(color);
+    return brush.GetLastStatus() == Gdiplus::Ok && graphics.FillPath(&brush, &path) == Gdiplus::Ok;
+}
+
 bool DrawWidget(Gdiplus::Graphics& graphics, const TextKey& key, const std::wstring& text,
                 const Gdiplus::RectF& rect, float fontSize, std::uint32_t color,
                 WidgetGlyphContext& glyphs, bool retain) {
     std::unique_ptr<Gdiplus::GraphicsPath> transient;
     const auto* path = glyphs.Resolve(key, text, rect, fontSize, retain, transient);
     if (!path) return false;
-    Gdiplus::Pen outline(Gdiplus::Color(key.outlineColor), key.outlineWidth);
     Gdiplus::SolidBrush fill{Gdiplus::Color(color)};
-    if (outline.GetLastStatus() != Gdiplus::Ok || fill.GetLastStatus() != Gdiplus::Ok ||
-        outline.SetLineJoin(Gdiplus::LineJoinRound) != Gdiplus::Ok) return false;
-    return graphics.DrawPath(&outline, path) == Gdiplus::Ok && graphics.FillPath(&fill, path) == Gdiplus::Ok;
+    if (fill.GetLastStatus() != Gdiplus::Ok) return false;
+    if (key.outlineWidth > 0.0f) {
+      Gdiplus::Pen outline(Gdiplus::Color(key.outlineColor), key.outlineWidth);
+      if (outline.GetLastStatus() != Gdiplus::Ok ||
+          outline.SetLineJoin(Gdiplus::LineJoinRound) != Gdiplus::Ok) return false;
+      if (graphics.DrawPath(&outline, path) != Gdiplus::Ok) return false;
+    }
+    return graphics.FillPath(&fill, path) == Gdiplus::Ok;
 }
 bool Draw(Gdiplus::Graphics& graphics, WidgetTextSlot slot, const TextKey& key, WidgetGlyphContext& glyphs) {
     if (slot == WidgetTextSlot::Merit)
@@ -198,6 +214,7 @@ bool Draw(Gdiplus::Graphics& graphics, WidgetTextSlot slot, const TextKey& key, 
     }
     if (slot == WidgetTextSlot::Encourager) {
         // 底栏设计坐标：offwork 段（256..330）之后为鼓励器段（336..508）。
+        if (!FillRoundedPanel(graphics, Gdiplus::RectF(8, 338, 224, 98), 14, Gdiplus::Color(112, 28, 28, 34))) return false;
         if (!DrawWidget(graphics, key, key.first, {12, 340, 216, 26},
                 key.firstSize, key.firstColor, glyphs, true)) return false;
         if (!DrawWidget(graphics, key, key.second, {12, 366, 216, 42},
@@ -213,6 +230,7 @@ bool Draw(Gdiplus::Graphics& graphics, WidgetTextSlot slot, const TextKey& key, 
         }
         return true;
     }
+    if (!FillRoundedPanel(graphics, Gdiplus::RectF(8, 257, 224, 72), 14, Gdiplus::Color(112, 28, 28, 34))) return false;
     if (!DrawWidget(graphics, key, key.first, {12, 258, 216, 28}, key.firstSize, key.firstColor, glyphs, true)) return false;
     constexpr float cellWidth = 17;
     const float left = (240 - cellWidth * static_cast<float>(key.second.size())) / 2;
