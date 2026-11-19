@@ -481,7 +481,7 @@ void CultPaint(Gdiplus::Graphics& g, const CultivationViewData& d, float W, floa
   g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
   g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
   Gdiplus::SolidBrush white(Gdiplus::Color(255, 255, 255, 255));
-  g.FillRectangle(&white, 0, 0, W, H);
+  g.FillRectangle(&white, Gdiplus::RectF(0, 0, W, H));
   const Gdiplus::Color metal(255, 204, 161, 66), metalDark(255, 158, 120, 43),
       ink(255, 29, 29, 31), muted(255, 120, 125, 133), track(255, 230, 230, 230);
   const float cx = W / 2.0f, R = 50.0f, cy = 60.0f;
@@ -513,7 +513,7 @@ void CultPaint(Gdiplus::Graphics& g, const CultivationViewData& d, float W, floa
   for (int i = 0; i < n; ++i) {
     const float rowTop = y + rowH * static_cast<float>(i);
     const bool achieved = (i < d.level), current = (i == d.level);
-    if (current) { Gdiplus::SolidBrush bg(Gdiplus::Color(36, 204, 161, 66)); const float rx = leftX - 12; g.FillRectangle(&bg, rx, rowTop + 2, W - rx * 2, rowH - 4); }
+    if (current) { Gdiplus::SolidBrush bg(Gdiplus::Color(36, 204, 161, 66)); const float rx = leftX - 12; g.FillRectangle(&bg, Gdiplus::RectF(rx, rowTop + 2, W - rx * 2, rowH - 4)); }
     const float dotCy = rowTop + rowH / 2.0f;
     if (achieved || current) { Gdiplus::SolidBrush db(metal); g.FillEllipse(&db, dotCx - dotR, dotCy - dotR, dotR * 2, dotR * 2); }
     else { Gdiplus::Pen dp(Gdiplus::Color(255, 199, 199, 199), 1.5f); g.DrawEllipse(&dp, dotCx - dotR, dotCy - dotR, dotR * 2, dotR * 2); }
@@ -543,7 +543,7 @@ LRESULT CALLBACK CultivationProc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
       HGDIOBJ old = SelectObject(mem, bmp);
       { Gdiplus::Graphics g(mem); const float scale = cw / kCultW; g.ScaleTransform(scale, scale);
         if (gCult.hasData) CultPaint(g, gCult.data, kCultW, kCultH);
-        else { Gdiplus::SolidBrush wh(Gdiplus::Color(255, 255, 255, 255)); g.FillRectangle(&wh, 0, 0, kCultW, kCultH); } }
+        else { Gdiplus::SolidBrush wh(Gdiplus::Color(255, 255, 255, 255)); g.FillRectangle(&wh, Gdiplus::RectF(0, 0, kCultW, kCultH)); } }
       BitBlt(hdc, 0, 0, cw, ch, mem, 0, 0, SRCCOPY);
       SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem); EndPaint(w, &ps); return 0;
     }
