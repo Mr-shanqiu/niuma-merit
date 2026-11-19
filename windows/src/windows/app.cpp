@@ -4590,11 +4590,13 @@ void ShowAboutDialog(HWND owner) {
                  L"Counts key presses and mouse clicks; scrolling is estimated by distance. Does not read typed content or mouse position.\nNo network requests, telemetry, or automatic updates.\n\nOfficial website:\n");
   text += L"https://gongde.zqscreen.cn/";
   if (mainland) {
+    text += L"\n\n";
     text += UiText(L"如未正常计数，可联系开发者，或扫描下方抖音码进粉丝群寻求帮助。",
-                   L"\n\nIf input is not being counted, contact the developer or scan the Douyin code below to join the fan group for help.");
+                   L"If input is not being counted, contact the developer or scan the Douyin code below to join the fan group for help.");
   } else {
+    text += L"\n\n";
     text += UiText(L"购买与授权：\n本软件通过 Paddle 提供购买与授权（Paddle 为授权与收款服务商）。\n\n开源仓库：\nhttps://github.com/shanqiuwong/niuma-merit\n\n更多帮助请见官网：\nhttps://gongde.zqscreen.cn/",
-                   L"\n\nPurchase & licence:\nThis app is sold and licensed via Paddle (our licensing and payment provider).\n\nOpen-source:\nhttps://github.com/shanqiuwong/niuma-merit\n\nMore help on the website:\nhttps://gongde.zqscreen.cn/");
+                   L"Purchase & licence:\nThis app is sold and licensed via Paddle (our licensing and payment provider).\n\nOpen-source:\nhttps://github.com/shanqiuwong/niuma-merit\n\nMore help on the website:\nhttps://gongde.zqscreen.cn/");
   }
   AboutDialogState state;
   state.text = text;

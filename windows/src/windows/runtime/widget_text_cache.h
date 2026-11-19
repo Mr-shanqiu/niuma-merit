@@ -22,10 +22,10 @@ enum class WidgetTextSlot : std::uint8_t {
 struct WidgetTextStyle {
     std::wstring widgetFamily = L"Microsoft YaHei UI";
     std::wstring plusFamily = L"Segoe UI";
-    std::uint32_t meritColor = 0xfff08b23;
-    std::uint32_t plusColor = 0xfff08b23;
-    std::uint32_t labelColor = 0xfff8f4eb;
-    std::uint32_t durationColor = 0xfff08b23;
+    std::uint32_t meritColor = 0xfff2b854;
+    std::uint32_t plusColor = 0xfff2b854;
+    std::uint32_t labelColor = 0xfff2b854;
+    std::uint32_t durationColor = 0xfff2b854;
     std::uint32_t outlineColor = 0xbe181818;
     float outlineWidth = 1.5f;
     float meritFont = 26, longMeritFont = 22, longestMeritFont = 18;

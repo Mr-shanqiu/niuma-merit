@@ -204,7 +204,7 @@ bool Draw(Gdiplus::Graphics& graphics, WidgetTextSlot slot, const TextKey& key, 
                 key.secondSize, key.secondColor, glyphs, true)) return false;
         const float progress = key.progress;
         Gdiplus::SolidBrush track(Gdiplus::Color(70, 248, 244, 235));
-        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 240, 139, 35));
+        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 242, 184, 84));
         const Gdiplus::RectF bar(18, 424, 204, 10);
         if (graphics.FillRectangle(&track, bar) != Gdiplus::Ok) return false;
         if (progress > 0) {
