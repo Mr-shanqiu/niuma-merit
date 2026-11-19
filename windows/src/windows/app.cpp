@@ -37,6 +37,7 @@
 #include "../client/core/work_encourager.h"
 #include "../client/core/medals.h"
 #include "medal_view.h"
+#include "cultivation_level.h"
 #include "../calendar_month_range.h"
 #include "../reminder_activity.h"
 #include "../reminder_geometry.h"
@@ -1924,9 +1925,9 @@ INT_PTR CALLBACK AppearanceScaleDialogProcedure(HWND window, UINT message, WPARA
       control(L"STATIC", UiText(L"60%", L"60%"), 0, 20, 104, 60, 22, -1);
       control(L"STATIC", UiText(L"180%", L"180%"), 0, 240, 104, 60, 22, -1);
       control(L"STATIC", UiText(
-          L"仅影响本机显示大小；不改变功德计数、日历、曲线或勋章数据。\r\n"
+          L"仅影响本机显示大小；不改变功德计数、日历或勋章数据。\r\n"
           L"极限档会自动收进屏幕可用区，不超出屏幕。",
-          L"Affects local display size only; merit counts, calendar, curve and medals are unchanged.\r\n"
+          L"Affects local display size only; merit counts, calendar and medals are unchanged.\r\n"
           L"At extreme sizes the widget is clamped inside the screen work area."),
           0, 20, 130, 380, 56, -1);
       control(L"BUTTON", UiText(L"取消", L"Cancel"), WS_TABSTOP | BS_PUSHBUTTON,
@@ -2186,10 +2187,40 @@ niuma::windows::window::MedalViewData BuildMedalViewData() {
   return data;
 }
 
+static std::wstring CultGroupNum(std::uint64_t v) {
+  std::wstring s = std::to_wstring(v), out; const int n = static_cast<int>(s.size());
+  for (int i = 0; i < n; ++i) { if (i > 0 && (n - i) % 3 == 0) out.push_back(L','); out.push_back(s[static_cast<size_t>(i)]); }
+  return out;
+}
+static std::wstring CultFormat(const wchar_t* t, const std::wstring& v) {
+  std::wstring s = t ? t : L""; const size_t p = s.find(L"%");
+  if (p != std::wstring::npos) s.replace(p, 2, v);
+  return s;
+}
+static std::wstring CultRank(int i) {
+  switch (i) {
+    case 0: return UiText(L"香客", L"Pilgrim");
+    case 1: return UiText(L"居士", L"Lay follower");
+    case 2: return UiText(L"行者", L"Practitioner");
+    case 3: return UiText(L"苦行僧", L"Ascetic");
+    case 4: return UiText(L"高僧", L"Venerable");
+    case 5: return UiText(L"宗师", L"Master");
+  }
+  return UiText(L"香客", L"Pilgrim");
+}
+// FB10/D22：勋章墙改为「修行等级」（与 mac 对齐）。仍基于累计功德 gState.total。
 void ShowMedals(HWND owner) {
-  if (!gMedalsReady) LoadMedalsState();
-  EvaluateMedals();
-  niuma::windows::window::ShowMedalWindow(owner, BuildMedalViewData());
+  const std::uint64_t merit = static_cast<std::uint64_t>(gState.total);
+  const auto st = niuma::cultivation::Evaluate(merit);
+  niuma::windows::window::CultivationViewData d;
+  d.level = st.level; d.progress = st.progress; d.maxLevel = st.max_level;
+  d.title = CultRank(st.level);
+  d.meritText = CultFormat(UiText(L"累计功德 %@", L"Total merit %@"), CultGroupNum(st.merit));
+  if (st.max_level) d.subtitle = CultRank(st.level) + L" \u00b7 " + std::wstring(UiText(L"功德圆满", L"Perfection attained"));
+  else d.subtitle = CultFormat(UiText(L"距下一级还差 %@ 功德", L"%@ merit to next level"), CultGroupNum(st.remaining));
+  const std::uint64_t* th = niuma::cultivation::Thresholds();
+  for (int i = 0; i < niuma::cultivation::kLevelCount; ++i) { d.levelTitles[i] = CultRank(i); d.levelThresholds[i] = th[i]; }
+  niuma::windows::window::ShowCultivationWindow(owner, d);
 }
 
 // 曲线窗口打开时随数据刷新（保留用户当前选择的视图）。
@@ -6141,7 +6172,7 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
   append(kMenuAutoHide, UiText(L"全屏或最大化时自动隐身", L"Auto-hide in Fullscreen or Maximized"), L"\xE740", gVisibility.autoHideFullscreen);
   append(kMenuAppearance, UiText(L"更换形象", L"Change Appearance"), L"\xE77B");
   append(kMenuCalendar, UiText(L"功德日历…", L"Merit Calendar…"), L"\xE787");
-  append(kMenuMedals, UiText(L"勋章与成就…", L"Medals & Achievements…"), L"\xE735");
+  append(kMenuMedals, UiText(L"修行等级…", L"Cultivation Level…"), L"\xE735");
   append(kMenuEncourager, UiText(L"上班鼓励器…", L"Work Encourager…"), L"\xE8C7", gState.encouragerActive);
   append(kMenuAppearanceScale, UiText(L"形象大小…", L"Appearance Size…"), L"\xE7A1");
   append(kMenuOffwork, UiText(L"下班倒计时…", L"Off-work Countdown…"), L"\xE823", gOffwork.enabled);

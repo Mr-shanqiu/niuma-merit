@@ -46,4 +46,17 @@ bool MedalWindowOpen();
 void RefreshMedalWindow(const MedalViewData& data);
 void CloseMedalWindow();
 
+// FB10/D22 · 修行等级窗口（替代旧勋章墙，与 mac 对齐）。
+struct CultivationViewData {
+  int level = 0;                 // 0-based
+  std::wstring title;            // 当前称号
+  std::wstring meritText;        // 累计功德文案
+  std::wstring subtitle;         // 距下一级/圆满
+  double progress = 0.0;         // 0..1
+  bool maxLevel = false;
+  std::array<std::wstring, 6> levelTitles{};
+  std::array<std::uint64_t, 6> levelThresholds{};
+};
+void ShowCultivationWindow(HWND owner, const CultivationViewData& data);
+
 }  // namespace niuma::windows::window
