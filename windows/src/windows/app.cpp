@@ -1697,7 +1697,14 @@ bool RefreshEncourager(bool force);  // 定义在下方；LoadEncouragerState �
 const char* UiLanguageTag() { return niuma::ui::CurrentLanguageTag(); }
 
 std::wstring EncouragerWide(const std::string& value) {
-  return std::wstring(value.begin(), value.end());
+  if (value.empty()) return {};
+  const int len = MultiByteToWideChar(CP_UTF8, 0, value.data(),
+      static_cast<int>(value.size()), nullptr, 0);
+  if (len <= 0) return {};
+  std::wstring out(static_cast<size_t>(len), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+      out.data(), len);
+  return out;
 }
 
 // ISO 4217 代码等 ASCII 字面量 → std::string（不做本地化转换）。
