@@ -4185,8 +4185,8 @@ void MeasureAboutContent(AboutDialogState& state) {
   ReleaseDC(state.viewport, dc);
   state.textHeight = static_cast<int>(measured.bottom) + 4;
   state.helpHeight = state.lineHeight + state.padding;
-  state.contentHeight = state.padding * 5 + state.textHeight +
-                        state.helpHeight + state.promoHeight +
+  state.contentHeight = (state.mainland ? state.padding * 5 : state.padding * 2) +
+                        state.textHeight + state.helpHeight + state.promoHeight +
                         (state.mainland ? state.imageHeight : 0);
 
   SCROLLINFO info = {};
@@ -4202,6 +4202,8 @@ void MeasureAboutContent(AboutDialogState& state) {
   info.nPage = static_cast<UINT>(state.viewportHeight);
   info.nPos = state.scrollY;
   SetScrollInfo(state.viewport, SB_VERT, &info, TRUE);
+  ShowScrollBar(state.viewport, SB_HORZ, state.contentWidth > state.viewportWidth);
+  ShowScrollBar(state.viewport, SB_VERT, state.contentHeight > state.viewportHeight);
   ScrollAboutContent(state, state.scrollX, state.scrollY);
 }
 
@@ -4582,6 +4584,7 @@ INT_PTR CALLBACK AboutDialogProcedure(HWND window, UINT message,
           SendMessageW(state->languageCombo, WM_SETFONT,
                        reinterpret_cast<WPARAM>(state->font), TRUE);
       }
+      LayoutAboutDialog(window, *state);
       SetFocus(GetDlgItem(window, IDOK));
       return FALSE;
     }
