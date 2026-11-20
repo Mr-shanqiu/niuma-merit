@@ -322,11 +322,14 @@ inline bool DrawMenuFrame(DRAWITEMSTRUCT* item, UINT dpi) {
   RECT background = r; InflateRect(&background, -Dip(5, dpi), -Dip(2, dpi));
   if (item->itemState & ODS_SELECTED) Rounded(item->hDC, background, RGB(235, 240, 248), Dip(7, dpi));
   SetBkMode(item->hDC, TRANSPARENT); SetTextColor(item->hDC, kInk);
+  const bool hasIcon = data.icon && data.icon[0] != L'\0';
   HFONT icon = Font(dpi, 16, FW_NORMAL, L"Segoe MDL2 Assets"); HGDIOBJ old = SelectObject(item->hDC, icon);
-  RECT glyph = r; glyph.left += Dip(15, dpi); glyph.right = glyph.left + Dip(22, dpi);
-  DrawTextW(item->hDC, data.icon, -1, &glyph, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  if (hasIcon) {
+    RECT glyph = r; glyph.left += Dip(15, dpi); glyph.right = glyph.left + Dip(22, dpi);
+    DrawTextW(item->hDC, data.icon, -1, &glyph, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
   HFONT font = Font(dpi); SelectObject(item->hDC, font);
-  RECT text = r; text.left += Dip(47, dpi); text.right -= Dip(26, dpi);
+  RECT text = r; text.left += Dip(hasIcon ? 47 : 15, dpi); text.right -= Dip(26, dpi);
   DrawTextW(item->hDC, data.text, -1, &text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   if (data.checked) { RECT check = r; check.left = check.right - Dip(28, dpi);
     DrawTextW(item->hDC, L"\x2713", -1, &check, DT_CENTER | DT_VCENTER | DT_SINGLELINE); }

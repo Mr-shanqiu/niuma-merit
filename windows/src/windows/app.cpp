@@ -6172,23 +6172,23 @@ void ShowContextMenu(HWND window, POINT screenPoint) {
         (checked ? MF_CHECKED : 0), id, reinterpret_cast<const wchar_t*>(&items.back()));
   };
   append(kMenuVisibility, gVisibility.hidden() ? UiText(L"显示形象（继续计数）", L"Show Appearance") :
-      UiText(L"隐藏形象（继续计数）", L"Hide (Keep Counting)"), L"\xE890");
-  append(kMenuAutoHide, UiText(L"全屏或最大化时自动隐身", L"Auto-hide in Fullscreen or Maximized"), L"\xE740", gVisibility.autoHideFullscreen);
-  append(kMenuAppearance, UiText(L"更换形象", L"Change Appearance"), L"\xE77B");
-  append(kMenuCalendar, UiText(L"功德日历…", L"Merit Calendar…"), L"\xE787");
-  append(kMenuMedals, UiText(L"修行等级…", L"Cultivation Level…"), L"\xE735");
-  append(kMenuEncourager, UiText(L"上班鼓励器…", L"Work Encourager…"), L"\xE8C7", gState.encouragerActive);
-  append(kMenuAppearanceScale, UiText(L"形象大小…", L"Appearance Size…"), L"\xE7A1");
-  append(kMenuOffwork, UiText(L"下班倒计时…", L"Off-work Countdown…"), L"\xE823", gOffwork.enabled);
+      UiText(L"隐藏形象（继续计数）", L"Hide (Keep Counting)"), L"");
+  append(kMenuAutoHide, UiText(L"全屏或最大化时自动隐身", L"Auto-hide in Fullscreen or Maximized"), L"", gVisibility.autoHideFullscreen);
+  append(kMenuAppearance, UiText(L"更换形象", L"Change Appearance"), L"");
+  append(kMenuCalendar, UiText(L"功德日历…", L"Merit Calendar…"), L"");
+  append(kMenuMedals, UiText(L"修行等级…", L"Cultivation Level…"), L"");
+  append(kMenuEncourager, UiText(L"上班鼓励器…", L"Work Encourager…"), L"", gState.encouragerActive);
+  append(kMenuAppearanceScale, UiText(L"形象大小…", L"Appearance Size…"), L"");
+  append(kMenuOffwork, UiText(L"下班倒计时…", L"Off-work Countdown…"), L"", gOffwork.enabled);
   if (IsRuntimeCandidate()) {
-    append(kMenuLaunchAtLogin, UiText(L"测试数据 · 自动启动已禁用", L"Test data · Startup disabled"), L"\xE7F4", false, true);
+    append(kMenuLaunchAtLogin, UiText(L"测试数据 · 自动启动已禁用", L"Test data · Startup disabled"), L"", false, true);
     EnableMenuItem(menu, kMenuLaunchAtLogin, MF_BYCOMMAND | MF_GRAYED);
   } else {
-    append(kMenuLaunchAtLogin, UiText(L"登录后自动启动", L"Start at Login"), L"\xE7F4", IsLaunchAtLoginEnabled(), true);
+    append(kMenuLaunchAtLogin, UiText(L"登录后自动启动", L"Start at Login"), L"", IsLaunchAtLoginEnabled(), true);
     if (gIsolatedAcceptance) EnableMenuItem(menu, kMenuLaunchAtLogin, MF_BYCOMMAND | MF_GRAYED);
   }
-  append(kMenuAbout, UiText(L"关于牛马电子功德", L"About NiuMa Merit"), L"\xE946", false, true);
-  append(kMenuQuit, UiText(L"退出", L"Exit"), L"\xE8AC");
+  append(kMenuAbout, UiText(L"关于牛马电子功德", L"About NiuMa Merit"), L"", false, true);
+  append(kMenuQuit, UiText(L"退出", L"Exit"), L"");
   MENUINFO style{}; style.cbSize = sizeof(style); style.fMask = MIM_BACKGROUND | MIM_STYLE;
   style.hbrBack = niuma::ui::WhiteBrush(); style.dwStyle = MNS_NOCHECK;
   SetMenuInfo(menu, &style);
