@@ -1929,13 +1929,13 @@ INT_PTR CALLBACK AppearanceScaleDialogProcedure(HWND window, UINT message, WPARA
           L"极限档会自动收进屏幕可用区，不超出屏幕。",
           L"Affects local display size only; merit counts, calendar and medals are unchanged.\r\n"
           L"At extreme sizes the widget is clamped inside the screen work area."),
-          0, 20, 130, 380, 56, -1);
+          0, 20, 130, 380, 76, -1);
       control(L"BUTTON", UiText(L"取消", L"Cancel"), WS_TABSTOP | BS_PUSHBUTTON,
-          214, 196, 86, 32, IDCANCEL);
+          214, 216, 86, 32, IDCANCEL);
       control(L"BUTTON", UiText(L"保存", L"Save"), WS_TABSTOP | BS_DEFPUSHBUTTON,
-          310, 196, 86, 32, IDOK);
+          310, 216, 86, 32, IDOK);
 
-      RECT rect = {0, 0, ScaleDip(416, dpi), ScaleDip(248, dpi)};
+      RECT rect = {0, 0, ScaleDip(416, dpi), ScaleDip(280, dpi)};
       AdjustWindowRectEx(&rect, WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
           FALSE, WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT);
       MONITORINFO monitor = {sizeof(monitor)};
@@ -4461,7 +4461,7 @@ void LayoutAboutDialog(HWND window, AboutDialogState& state) {
              height - padding - buttonHeight, buttonWidth, buttonHeight, TRUE);
   if (state.languageCombo) {
     const int comboHeight = std::min(MulDiv(24, gState.dpi, 96), buttonHeight);
-    int comboWidth = MulDiv(170, gState.dpi, 96);
+    int comboWidth = MulDiv(220, gState.dpi, 96);
     const int maxCombo = std::max(1, width - padding * 2 - buttonWidth - padding);
     if (comboWidth > maxCombo) comboWidth = maxCombo;
     MoveWindow(state.languageCombo, padding,
