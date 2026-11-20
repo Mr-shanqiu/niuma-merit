@@ -4108,6 +4108,7 @@ const wchar_t* AboutDouyinCaption() {
 
 struct AboutDialogState {
   std::wstring text;
+  bool mainland = true;
   PngResource douyin;
   HWND viewport = nullptr;
   HWND helpLink = nullptr;
@@ -4172,13 +4173,14 @@ void MeasureAboutContent(AboutDialogState& state) {
   RECT promo = {0, 0, state.contentWidth - state.padding * 2, 0};
   DrawTextW(dc, AboutDouyinCaption(), -1, &promo,
             DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_CENTER);
-  state.promoHeight = static_cast<int>(promo.bottom) + 4;
+  state.promoHeight = state.mainland ? static_cast<int>(promo.bottom) + 4 : 0;
   SelectObject(dc, oldFont);
   ReleaseDC(state.viewport, dc);
   state.textHeight = static_cast<int>(measured.bottom) + 4;
   state.helpHeight = state.lineHeight + state.padding;
   state.contentHeight = state.padding * 5 + state.textHeight +
-                        state.helpHeight + state.promoHeight + state.imageHeight;
+                        state.helpHeight + state.promoHeight +
+                        (state.mainland ? state.imageHeight : 0);
 
   SCROLLINFO info = {};
   info.cbSize = sizeof(info);
@@ -4216,8 +4218,9 @@ void DrawAboutContent(HWND window, HDC dc, const RECT& client,
       state.padding * 3 + state.textHeight + state.helpHeight - state.scrollY,
       state.contentWidth - state.padding - state.scrollX,
       state.padding * 3 + state.textHeight + state.helpHeight + state.promoHeight - state.scrollY};
-  DrawTextW(dc, AboutDouyinCaption(), -1, &promo,
-            DT_WORDBREAK | DT_NOPREFIX | DT_CENTER);
+  if (state.mainland)
+    DrawTextW(dc, AboutDouyinCaption(), -1, &promo,
+              DT_WORDBREAK | DT_NOPREFIX | DT_CENTER);
   SelectObject(dc, oldFont);
   if (state.douyin.image && state.douyin.image->GetWidth() != 0 &&
       state.douyin.image->GetHeight() != 0) {
@@ -4631,6 +4634,7 @@ void ShowAboutDialog(HWND owner) {
   }
   AboutDialogState state;
   state.text = text;
+  state.mainland = mainland;
   const HMODULE module = GetModuleHandleW(nullptr);
   if (mainland) {
     const HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(110), RT_RCDATA);
