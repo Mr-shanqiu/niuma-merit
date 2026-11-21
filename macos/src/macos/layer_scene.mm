@@ -195,7 +195,7 @@
   self.symbol = symbol ?: @"";
   [self stop];
   if (active) {
-    const NSTimeInterval interval = [self reduceMotion] ? 1.0 : (1.0 / 60.0);
+    const NSTimeInterval interval = [self reduceMotion] ? 1.0 : 0.2;  // 金额只到分、约1s变一次，5Hz足够，避免60fps重复重排吃CPU
     self.timer = [NSTimer timerWithTimeInterval:interval target:self
         selector:@selector(frameTick:) userInfo:nil repeats:YES];
     [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
