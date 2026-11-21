@@ -102,6 +102,20 @@ bool ClientDisplay::DrawLatest(const ClientDisplayState& state,std::uint64_t now
       static_cast<int>(std::ceil(clip.y+clip.height))-top};
     quads.push_back(q);
   }
+  // 形象主体自动居中（对齐 mac）：取面积最大的形象层，其水平中心对齐画布中线(设计坐标120)。
+  if (!quads.empty()) {
+    float bestArea = -1.0f, bestCx = 0.0f;
+    for (const auto& q : quads) {
+      const auto& P = q.geometry.positions;
+      const float w = P[1].x - P[0].x, h = P[3].y - P[0].y;
+      const float a = (w > 0 && h > 0) ? w * h : 0.0f;
+      if (a > bestArea) { bestArea = a; bestCx = (P[0].x + P[1].x) * 0.5f; }
+    }
+    const float shift = 120.0f * state.text.pixelScale - bestCx;
+    if (std::fabs(shift) > 0.001f)
+      for (auto& q : quads)
+        for (unsigned pi = 0; pi < 4; ++pi) q.geometry.positions[pi].x += shift;
+  }
   const float plusY=frame ? frame->plusOneRect.y/state.text.pixelScale : 46.f;
   // Preserve existing order: artwork, +1, merit, clock band, then the F2 band.
   for(auto slot : {graphics::WidgetTextSlot::PlusOne,graphics::WidgetTextSlot::Merit,
