@@ -1754,8 +1754,27 @@ bool RefreshEncourager(bool force) {
   const std::string code = EffectiveCurrencyCode();
   const int exponent = niuma::encourager::ExponentForCode(code);
   const std::string symbol = niuma::encourager::SymbolForCode(code);
-  const std::wstring amount = EncouragerWide(
-      niuma::encourager::FormatAmountMinor(status.earned_minor, exponent, symbol));
+  // 5 位小数（tick=1e-5 元）+ 千分位，与 mac FormatTickAmount 完全一致。
+  const std::uint64_t kTickUnitsPerYuan = 100000ULL;
+  std::uint64_t wageTick = gState.encouragerDailyWageMinor * kTickUnitsPerYuan;
+  for (int e = 0; e < exponent; ++e) wageTick /= 10;
+  std::uint64_t earnedTick = 0;
+  if (status.total_seconds > 0)
+    earnedTick = wageTick * static_cast<std::uint64_t>(status.elapsed_seconds) /
+                 static_cast<std::uint64_t>(status.total_seconds);
+  const std::uint64_t whole = earnedTick / kTickUnitsPerYuan;
+  const std::uint64_t frac = earnedTick % kTickUnitsPerYuan;
+  std::string digits = std::to_string(whole), grouped;
+  int gcount = 0;
+  for (int i = static_cast<int>(digits.size()) - 1; i >= 0; --i) {
+    grouped.push_back(digits[static_cast<std::size_t>(i)]);
+    if (++gcount % 3 == 0 && i > 0) grouped.push_back(',');
+  }
+  std::reverse(grouped.begin(), grouped.end());
+  std::string fracStr = std::to_string(frac);
+  while (fracStr.size() < 5) fracStr.insert(fracStr.begin(), '0');
+  const std::string amt = symbol + grouped + "." + fracStr;
+  const std::wstring amount = EncouragerWide(amt);
   const std::wstring label = UiText(L"今日已赚", L"Earned today");
   const float progress = static_cast<float>(status.progress);
   const bool wasActive = gState.encouragerActive;
