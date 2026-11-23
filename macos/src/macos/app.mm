@@ -1476,7 +1476,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   self.progressStartSecond = window.Valid() ? window.StartSecond() : 0;
   self.progressTotalSeconds = window.TotalSeconds();
   self.progressSymbol = [NSString stringWithUTF8String:symbol.c_str()];
-  self.progressDecimals = exponent;
+  self.progressDecimals = (exponent > 0 ? 5 : 0);  // 有分货币5位(快速滚动)，日元韩元0位
   if (mode == kProgressModeEarned) {
     self.progressMainText = earnedValue;
     // 下班后即便只显示今日已赚，也补一句「已加班 X」。

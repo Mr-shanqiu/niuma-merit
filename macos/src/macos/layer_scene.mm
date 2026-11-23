@@ -199,7 +199,7 @@
   self.decimals = decimals;
   [self stop];
   if (active) {
-    const NSTimeInterval interval = [self reduceMotion] ? 1.0 : 0.2;  // 5Hz 跳字计数(无滚动，省电~1%)
+    const NSTimeInterval interval = [self reduceMotion] ? 1.0 : (1.0 / 20.0);  // 20fps 末位连续滚动(5位小数,省电)
     self.timer = [NSTimer timerWithTimeInterval:interval target:self
         selector:@selector(frameTick:) userInfo:nil repeats:YES];
     [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
@@ -233,41 +233,57 @@
   NSString *symbol = self.symbol ?: @"";
   const CGFloat W = NSWidth(self.bounds), H = NSHeight(self.bounds);
   const int dec = self.decimals < 0 ? 2 : self.decimals;
-  double unitVal = (V < 0 ? 0 : V) / 100000.0;
-  unsigned long long p10 = 1; for (int i = 0; i < dec; ++i) p10 *= 10ULL;
-  unsigned long long scaled = (unsigned long long)llround(unitVal * (double)p10);
-  unsigned long long whole = dec > 0 ? scaled / p10 : scaled;
-  unsigned long long frac = dec > 0 ? scaled % p10 : 0;
-  NSString *ws = [NSString stringWithFormat:@"%llu", whole];
-  NSMutableString *g = [NSMutableString string];
-  int c = 0;
-  for (NSInteger i = (NSInteger)ws.length - 1; i >= 0; --i) {
-    unichar ch = [ws characterAtIndex:(NSUInteger)i];
-    [g insertString:[NSString stringWithCharacters:&ch length:1] atIndex:0];
-    if (++c % 3 == 0 && i > 0) [g insertString:@"," atIndex:0];
+  const double unitVal = (V < 0 ? 0 : V) / 100000.0;
+  CGFloat useSize = self.fontSize;
+  NSFont *font = nil; NSDictionary *attrs = nil;
+  CGFloat symbolW = 0, digitAdv = 0, dotAdv = 0, totalW = 0;
+  int intDigits = 1;
+  unsigned long long wholeInt = (unsigned long long)floor(unitVal);
+  for (unsigned long long w = wholeInt; w >= 10; w /= 10) ++intDigits;
+  const int slotCount = intDigits + dec;
+  for (int it = 0; it < 4; ++it) {
+    font = [NSFont monospacedDigitSystemFontOfSize:useSize weight:NSFontWeightRegular];
+    attrs = @{NSFontAttributeName : font, NSForegroundColorAttributeName : self.numberColor};
+    symbolW = symbol.length ? [symbol sizeWithAttributes:attrs].width : 0.0;
+    digitAdv = ceil([@"0" sizeWithAttributes:attrs].width) + 2.0;
+    dotAdv = ceil([@"." sizeWithAttributes:attrs].width) + 2.0;
+    totalW = symbolW + (CGFloat)slotCount * digitAdv + (dec > 0 ? dotAdv : 0.0);
+    if (totalW <= W - 6.0) break;
+    if (totalW <= 0) break;
+    useSize *= (W - 6.0) / totalW;
+    if (useSize < 9.0) { useSize = 9.0; break; }
   }
-  NSString *text;
-  if (dec > 0) {
-    NSMutableString *fracStr = [NSMutableString stringWithFormat:@"%llu", frac];
-    while ((NSInteger)fracStr.length < dec) [fracStr insertString:@"0" atIndex:0];
-    text = [NSString stringWithFormat:@"%@%@.%@", symbol, g, fracStr];
-  } else {
-    text = [NSString stringWithFormat:@"%@%@", symbol, g];
+  font = [NSFont monospacedDigitSystemFontOfSize:useSize weight:NSFontWeightRegular];
+  attrs = @{NSFontAttributeName : font, NSForegroundColorAttributeName : self.numberColor};
+  symbolW = symbol.length ? [symbol sizeWithAttributes:attrs].width : 0.0;
+  digitAdv = ceil([@"0" sizeWithAttributes:attrs].width) + 2.0;
+  dotAdv = ceil([@"." sizeWithAttributes:attrs].width) + 2.0;
+  totalW = symbolW + (CGFloat)slotCount * digitAdv + (dec > 0 ? dotAdv : 0.0);
+  CGFloat x = (W - totalW) / 2.0; if (x < 2) x = 2;
+  const CGFloat lineH = H, slotY = 0;
+  const CGFloat textH = font.ascender - font.descender;
+  const CGFloat baselineY = slotY + (lineH - textH) / 2.0 - font.descender;
+  if (symbolW > 0) { [symbol drawAtPoint:NSMakePoint(x, baselineY) withAttributes:attrs]; x += symbolW; }
+  for (int e = intDigits - 1; e >= -dec; --e) {
+    if (e == -1 && dec > 0) { [@"." drawAtPoint:NSMakePoint(x, baselineY) withAttributes:attrs]; x += dotAdv; }
+    const double place = pow(10.0, (double)e);
+    const double val = unitVal / place;
+    const long long idigit = (long long)floor(val);
+    const int cur = (int)(((idigit % 10) + 10) % 10);
+    double frac = 0.0;
+    if (e == -dec) { frac = val - floor(val); if (frac < 0) frac = 0; if (frac > 1) frac = 1; }
+    const int next = (cur + 1) % 10;
+    NSString *dcur = [NSString stringWithFormat:@"%d", cur];
+    NSString *dnext = [NSString stringWithFormat:@"%d", next];
+    const CGFloat gx = x + (digitAdv - [dcur sizeWithAttributes:attrs].width) / 2.0;
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, CGRectMake(x, slotY, digitAdv, lineH));
+    [dcur drawAtPoint:NSMakePoint(gx, baselineY + (CGFloat)frac * lineH) withAttributes:attrs];
+    if (e == -dec && frac > 0.0)
+      [dnext drawAtPoint:NSMakePoint(gx, baselineY + ((CGFloat)frac - 1.0) * lineH) withAttributes:attrs];
+    CGContextRestoreGState(ctx);
+    x += digitAdv;
   }
-  CGFloat use = self.fontSize;
-  NSFont *f = nil; NSDictionary *a = nil; CGFloat tw = 0, th = 0;
-  for (int it = 0; it < 5; ++it) {
-    f = [NSFont monospacedDigitSystemFontOfSize:use weight:NSFontWeightRegular];
-    a = @{NSFontAttributeName : f, NSForegroundColorAttributeName : self.numberColor};
-    tw = [text sizeWithAttributes:a].width; th = [text sizeWithAttributes:a].height;
-    if (tw <= W - 6.0 || use <= 9.0) break;
-    use *= (W - 6.0) / tw;
-    if (use < 9.0) use = 9.0;
-  }
-  f = [NSFont monospacedDigitSystemFontOfSize:use weight:NSFontWeightRegular];
-  a = @{NSFontAttributeName : f, NSForegroundColorAttributeName : self.numberColor};
-  tw = [text sizeWithAttributes:a].width; th = [text sizeWithAttributes:a].height;
-  [text drawAtPoint:NSMakePoint((W - tw) / 2.0, (H - th) / 2.0) withAttributes:a];
   [NSGraphicsContext restoreGraphicsState];
 }
 @end
