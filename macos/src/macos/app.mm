@@ -688,6 +688,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic) int progressStartSecond;
 @property(nonatomic) int progressTotalSeconds;
 @property(nonatomic, copy) NSString *progressSymbol;
+@property(nonatomic) int progressDecimals;
 @property(nonatomic, strong) NSSegmentedControl *progressModeControl;
 @property(nonatomic) NSTimeInterval offworkLastSampleUptime;
 @property(nonatomic) NSTimeInterval offworkLastFlushUptime;
@@ -1062,7 +1063,8 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
                                     wageTick:self.controller.progressWageTick
                                  startSecond:self.controller.progressStartSecond
                                 totalSeconds:self.controller.progressTotalSeconds
-                                      symbol:self.controller.progressSymbol ?: @""];
+                                      symbol:self.controller.progressSymbol ?: @""
+                                    decimals:self.controller.progressDecimals];
   [self.renderer setEncouragerLabel:self.controller.progressSubText
                              amount:self.controller.progressMainIsEarned ? @"" : (self.controller.progressMainText ?: @"")
                            progress:self.controller.progressFraction
@@ -1474,6 +1476,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   self.progressStartSecond = window.Valid() ? window.StartSecond() : 0;
   self.progressTotalSeconds = window.TotalSeconds();
   self.progressSymbol = [NSString stringWithUTF8String:symbol.c_str()];
+  self.progressDecimals = exponent;
   if (mode == kProgressModeEarned) {
     self.progressMainText = earnedValue;
     // 下班后即便只显示今日已赚，也补一句「已加班 X」。

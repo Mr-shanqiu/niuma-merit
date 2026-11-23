@@ -156,6 +156,7 @@
 @property(nonatomic, strong) NSColor *numberColor;
 @property(nonatomic) CGFloat fontSize;
 @property(nonatomic) BOOL active;
+@property(nonatomic) int decimals;
 @property(nonatomic) double wageTick;     // 「元 × 1e5」整数刻度/天（实值）
 @property(nonatomic) int startSecond;     // 上班起（当日秒）
 @property(nonatomic) int totalSeconds;    // 上学总秒
@@ -164,7 +165,8 @@
                wageTick:(double)wageTick
             startSecond:(int)startSecond
            totalSeconds:(int)totalSeconds
-                 symbol:(NSString *)symbol;
+                 symbol:(NSString *)symbol
+               decimals:(int)decimals;
 - (void)stop;
 @end
 
@@ -172,6 +174,7 @@
 - (instancetype)init {
   if ((self = [super init])) {
     _fontSize = 26.0;
+    _decimals = 2;
     _numberColor = [NSColor colorWithCalibratedRed:.95 green:.72 blue:.33 alpha:1];
     self.masksToBounds = NO;
   }
@@ -187,12 +190,13 @@
   self.timer = nil;
 }
 - (void)configureActive:(BOOL)active wageTick:(double)wageTick startSecond:(int)startSecond
-           totalSeconds:(int)totalSeconds symbol:(NSString *)symbol {
+           totalSeconds:(int)totalSeconds symbol:(NSString *)symbol decimals:(int)decimals {
   self.active = active;
   self.wageTick = wageTick;
   self.startSecond = startSecond;
   self.totalSeconds = totalSeconds;
   self.symbol = symbol ?: @"";
+  self.decimals = decimals;
   [self stop];
   if (active) {
     const NSTimeInterval interval = [self reduceMotion] ? 1.0 : 0.2;  // 5Hz 跳字计数(无滚动，省电~1%)
@@ -228,8 +232,12 @@
   const double V = self.active ? [self currentTickValue] : 0.0;
   NSString *symbol = self.symbol ?: @"";
   const CGFloat W = NSWidth(self.bounds), H = NSHeight(self.bounds);
-  unsigned long long tick = (unsigned long long)llround(V < 0 ? 0 : V);
-  unsigned long long whole = tick / 100000ULL, frac = tick % 100000ULL;
+  const int dec = self.decimals < 0 ? 2 : self.decimals;
+  double unitVal = (V < 0 ? 0 : V) / 100000.0;
+  unsigned long long p10 = 1; for (int i = 0; i < dec; ++i) p10 *= 10ULL;
+  unsigned long long scaled = (unsigned long long)llround(unitVal * (double)p10);
+  unsigned long long whole = dec > 0 ? scaled / p10 : scaled;
+  unsigned long long frac = dec > 0 ? scaled % p10 : 0;
   NSString *ws = [NSString stringWithFormat:@"%llu", whole];
   NSMutableString *g = [NSMutableString string];
   int c = 0;
@@ -238,7 +246,14 @@
     [g insertString:[NSString stringWithCharacters:&ch length:1] atIndex:0];
     if (++c % 3 == 0 && i > 0) [g insertString:@"," atIndex:0];
   }
-  NSString *text = [NSString stringWithFormat:@"%@%@.%05llu", symbol, g, frac];
+  NSString *text;
+  if (dec > 0) {
+    NSMutableString *fracStr = [NSMutableString stringWithFormat:@"%llu", frac];
+    while ((NSInteger)fracStr.length < dec) [fracStr insertString:@"0" atIndex:0];
+    text = [NSString stringWithFormat:@"%@%@.%@", symbol, g, fracStr];
+  } else {
+    text = [NSString stringWithFormat:@"%@%@", symbol, g];
+  }
   CGFloat use = self.fontSize;
   NSFont *f = nil; NSDictionary *a = nil; CGFloat tw = 0, th = 0;
   for (int it = 0; it < 5; ++it) {
@@ -300,7 +315,7 @@
 - (void)setEncouragerLabel:(NSString *)label amount:(NSString *)amount progress:(double)progress visible:(BOOL)visible;
 - (void)setEncouragerOdometerActive:(BOOL)active wageTick:(double)wageTick
                         startSecond:(int)startSecond totalSeconds:(int)totalSeconds
-                             symbol:(NSString *)symbol;
+                             symbol:(NSString *)symbol decimals:(int)decimals;
 - (void)applyEncouragerBar;
 - (void)play:(NSTimeInterval)duration;
 - (void)play:(NSTimeInterval)duration atTime:(CFTimeInterval)start;
@@ -512,10 +527,10 @@ static void NMSetSceneText(CATextLayer *layer, NSString *value, CGFloat size, NS
 // FB7：配置/开关连续里程表金额层（主信息为「今日已赚」时启用）。
 - (void)setEncouragerOdometerActive:(BOOL)active wageTick:(double)wageTick
                         startSecond:(int)startSecond totalSeconds:(int)totalSeconds
-                             symbol:(NSString *)symbol {
+                             symbol:(NSString *)symbol decimals:(int)decimals {
   self.encouragerOdometerActive = active;
   [self.encouragerOdometer configureActive:active wageTick:wageTick startSecond:startSecond
-                              totalSeconds:totalSeconds symbol:symbol];
+                              totalSeconds:totalSeconds symbol:symbol decimals:decimals];
   self.encouragerAmount.hidden = !self.encouragerVisible || active;
   self.encouragerOdometer.hidden = !self.encouragerVisible || !active;
 }
