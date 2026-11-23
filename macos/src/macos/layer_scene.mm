@@ -195,7 +195,7 @@
   self.symbol = symbol ?: @"";
   [self stop];
   if (active) {
-    const NSTimeInterval interval = [self reduceMotion] ? 1.0 : 0.5;  // 2Hz：保留里程表滚动但省电(CPU~0.6%)
+    const NSTimeInterval interval = [self reduceMotion] ? 1.0 : 0.2;  // 5Hz 跳字计数(无滚动，省电~1%)
     self.timer = [NSTimer timerWithTimeInterval:interval target:self
         selector:@selector(frameTick:) userInfo:nil repeats:YES];
     [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
@@ -225,90 +225,34 @@
   NSGraphicsContext *gc = [NSGraphicsContext graphicsContextWithCGContext:ctx flipped:NO];
   [NSGraphicsContext saveGraphicsState];
   NSGraphicsContext.currentContext = gc;
-
   const double V = self.active ? [self currentTickValue] : 0.0;
-  NSFont *font = [NSFont monospacedDigitSystemFontOfSize:self.fontSize weight:NSFontWeightRegular];
-  NSDictionary *attrs = @{NSFontAttributeName : font, NSForegroundColorAttributeName : self.numberColor};
   NSString *symbol = self.symbol ?: @"";
   const CGFloat W = NSWidth(self.bounds), H = NSHeight(self.bounds);
-
-  if ([self reduceMotion] || !self.active) {
-    // 降级：直接显示静态数值（不滚动）。
-    unsigned long long tick = (unsigned long long)llround(V < 0 ? 0 : V);
-    unsigned long long whole = tick / 100000ULL, frac = tick % 100000ULL;
-    NSString *text = [NSString stringWithFormat:@"%@%llu.%05llu", symbol, whole, frac];
-    CGFloat tw = [text sizeWithAttributes:attrs].width;
-    CGFloat th = [text sizeWithAttributes:attrs].height;
-    [text drawAtPoint:NSMakePoint((W - tw) / 2.0, (H - th) / 2.0) withAttributes:attrs];
-    [NSGraphicsContext restoreGraphicsState];
-    return;
+  unsigned long long tick = (unsigned long long)llround(V < 0 ? 0 : V);
+  unsigned long long whole = tick / 100000ULL, frac = tick % 100000ULL;
+  NSString *ws = [NSString stringWithFormat:@"%llu", whole];
+  NSMutableString *g = [NSMutableString string];
+  int c = 0;
+  for (NSInteger i = (NSInteger)ws.length - 1; i >= 0; --i) {
+    unichar ch = [ws characterAtIndex:(NSUInteger)i];
+    [g insertString:[NSString stringWithCharacters:&ch length:1] atIndex:0];
+    if (++c % 3 == 0 && i > 0) [g insertString:@"," atIndex:0];
   }
-
-  // 固定等宽槽 + 统一基线 + 机械里程表位移模型；并按可用宽度自适应字号，
-  // 避免长金额（如 €425.87140 / 大额）右端被窗口裁掉（FB18）。
-  CGFloat symbolW = 0, digitAdv = 0, dotAdv = 0, totalW = 0, x = 0;
-  int maxE = 0, slotCount = 1;
-  unsigned long long whole = 0;
-  CGFloat useSize = self.fontSize;
-  for (int iter = 0; iter < 4; ++iter) {
-    NSFont *f2 = [NSFont monospacedDigitSystemFontOfSize:useSize weight:NSFontWeightRegular];
-    NSDictionary *a2 = @{NSFontAttributeName : f2, NSForegroundColorAttributeName : self.numberColor};
-    symbolW = symbol.length ? [symbol sizeWithAttributes:a2].width : 0.0;
-    digitAdv = ceil([@"0" sizeWithAttributes:a2].width) + 2.0;
-    dotAdv = ceil([@"." sizeWithAttributes:a2].width) + 2.0;
-    whole = (unsigned long long)floor(V / 100000.0);
-    int intDigits = 1;
-    for (unsigned long long w = whole; w >= 10; w /= 10) ++intDigits;
-    maxE = intDigits + 4;  // 0=末位(1 tick)，4=第 5 位小数，maxE=最高整数位
-    slotCount = maxE + 1;
-    totalW = symbolW + (CGFloat)slotCount * digitAdv + dotAdv;
-    if (totalW <= W - 6.0) break;
-    if (totalW <= 0) break;
-    useSize *= (CGFloat)(W - 6.0) / totalW;
-    if (useSize < 9.0) { useSize = 9.0; break; }
+  NSString *text = [NSString stringWithFormat:@"%@%@.%05llu", symbol, g, frac];
+  CGFloat use = self.fontSize;
+  NSFont *f = nil; NSDictionary *a = nil; CGFloat tw = 0, th = 0;
+  for (int it = 0; it < 5; ++it) {
+    f = [NSFont monospacedDigitSystemFontOfSize:use weight:NSFontWeightRegular];
+    a = @{NSFontAttributeName : f, NSForegroundColorAttributeName : self.numberColor};
+    tw = [text sizeWithAttributes:a].width; th = [text sizeWithAttributes:a].height;
+    if (tw <= W - 6.0 || use <= 9.0) break;
+    use *= (W - 6.0) / tw;
+    if (use < 9.0) use = 9.0;
   }
-  font = [NSFont monospacedDigitSystemFontOfSize:useSize weight:NSFontWeightRegular];
-  attrs = @{NSFontAttributeName : font, NSForegroundColorAttributeName : self.numberColor};
-  x = (W - totalW) / 2.0;
-  if (x < 2) x = 2;
-  const CGFloat lineH = H;          // 裁剪槽高 = 一行字高，只露一位
-  const CGFloat slotY = 0;
-  // 统一基线：所有数字轮 / 币种符号 / 小数点共用同一条基线，在槽内垂直居中。
-  const CGFloat textH = font.ascender - font.descender;
-  const CGFloat baselineY = slotY + (lineH - textH) / 2.0 - font.descender;
-
-  if (symbolW > 0) { [symbol drawAtPoint:NSMakePoint(x, baselineY) withAttributes:attrs]; x += symbolW; }
-  for (int e = maxE; e >= 0; --e) {
-    if (e == 4) {  // 小数点：整数与 5 位小数之间（同基线静态排版）
-      [@"." drawAtPoint:NSMakePoint(x, baselineY) withAttributes:attrs];
-      x += dotAdv;
-    }
-    const double p = pow(10.0, (double)e);
-    const long long digit = (long long)floor(V / p);
-    const int cur = (int)(((digit % 10) + 10) % 10);
-    // 机械里程表模型：末位(e=0)始终连续转；更高位仅在其低位临近进位(…99→…00)时
-    // 0→1 滚动，其余时间静止对齐——避免每位各带随机小数导致整串散架。
-    double frac;
-    if (e == 0) {
-      frac = V - floor(V);
-    } else {
-      const double lower = fmod(V, p);
-      frac = lower - (p - 1.0);
-      if (frac < 0) frac = 0;
-      if (frac > 1) frac = 1;
-    }
-    const int next = (cur + 1) % 10;
-    NSString *dcur = [NSString stringWithFormat:@"%d", cur];
-    NSString *dnext = [NSString stringWithFormat:@"%d", next];
-    const CGFloat gx = x + (digitAdv - [dcur sizeWithAttributes:attrs].width) / 2.0;
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, CGRectMake(x, slotY, digitAdv, lineH));
-    // 当前位随 frac 上移出槽，下一位自下方滚入（同一条数字带、同一基线）。
-    [dcur drawAtPoint:NSMakePoint(gx, baselineY + (CGFloat)frac * lineH) withAttributes:attrs];
-    [dnext drawAtPoint:NSMakePoint(gx, baselineY + ((CGFloat)frac - 1.0) * lineH) withAttributes:attrs];
-    CGContextRestoreGState(ctx);
-    x += digitAdv;
-  }
+  f = [NSFont monospacedDigitSystemFontOfSize:use weight:NSFontWeightRegular];
+  a = @{NSFontAttributeName : f, NSForegroundColorAttributeName : self.numberColor};
+  tw = [text sizeWithAttributes:a].width; th = [text sizeWithAttributes:a].height;
+  [text drawAtPoint:NSMakePoint((W - tw) / 2.0, (H - th) / 2.0) withAttributes:a];
   [NSGraphicsContext restoreGraphicsState];
 }
 @end
