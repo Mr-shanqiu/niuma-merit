@@ -1759,7 +1759,7 @@ bool RefreshEncourager(bool force) {
   if (status.total_seconds > 0)
     earnedTick = wageTick * static_cast<std::uint64_t>(status.elapsed_seconds) /
                  static_cast<std::uint64_t>(status.total_seconds);
-  const int dec = exponent < 0 ? 0 : exponent;
+  const int dec = exponent > 0 ? 5 : 0;  // 有分货币5位(滚动/精度)，日元韩元0位
   std::uint64_t p10 = 1; for (int i = 0; i < dec; ++i) p10 *= 10ULL;
   const std::uint64_t scaled = (earnedTick * p10 + kTickUnitsPerYuan / 2) / kTickUnitsPerYuan;
   const std::uint64_t whole = dec > 0 ? scaled / p10 : scaled;
