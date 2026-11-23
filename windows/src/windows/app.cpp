@@ -1751,7 +1751,7 @@ bool RefreshEncourager(bool force) {
   const std::string code = EffectiveCurrencyCode();
   const int exponent = niuma::encourager::ExponentForCode(code);
   const std::string symbol = niuma::encourager::SymbolForCode(code);
-  // 5 位小数（tick=1e-5 元）+ 千分位，与 mac FormatTickAmount 完全一致。
+  // 小数位按货币最小单位(exponent)：有分的 2 位、日元韩元 0 位；带千分位（与 mac 一致）。
   const std::uint64_t kTickUnitsPerYuan = 100000ULL;
   std::uint64_t wageTick = gState.encouragerDailyWageMinor * kTickUnitsPerYuan;
   for (int e = 0; e < exponent; ++e) wageTick /= 10;
@@ -1759,8 +1759,11 @@ bool RefreshEncourager(bool force) {
   if (status.total_seconds > 0)
     earnedTick = wageTick * static_cast<std::uint64_t>(status.elapsed_seconds) /
                  static_cast<std::uint64_t>(status.total_seconds);
-  const std::uint64_t whole = earnedTick / kTickUnitsPerYuan;
-  const std::uint64_t frac = earnedTick % kTickUnitsPerYuan;
+  const int dec = exponent < 0 ? 0 : exponent;
+  std::uint64_t p10 = 1; for (int i = 0; i < dec; ++i) p10 *= 10ULL;
+  const std::uint64_t scaled = (earnedTick * p10 + kTickUnitsPerYuan / 2) / kTickUnitsPerYuan;
+  const std::uint64_t whole = dec > 0 ? scaled / p10 : scaled;
+  const std::uint64_t frac = dec > 0 ? scaled % p10 : 0;
   std::string digits = std::to_string(whole), grouped;
   int gcount = 0;
   for (int i = static_cast<int>(digits.size()) - 1; i >= 0; --i) {
@@ -1768,9 +1771,12 @@ bool RefreshEncourager(bool force) {
     if (++gcount % 3 == 0 && i > 0) grouped.push_back(',');
   }
   std::reverse(grouped.begin(), grouped.end());
-  std::string fracStr = std::to_string(frac);
-  while (fracStr.size() < 5) fracStr.insert(fracStr.begin(), '0');
-  const std::string amt = symbol + grouped + "." + fracStr;
+  std::string amt = symbol + grouped;
+  if (dec > 0) {
+    std::string fracStr = std::to_string(frac);
+    while (static_cast<int>(fracStr.size()) < dec) fracStr.insert(fracStr.begin(), '0');
+    amt += "." + fracStr;
+  }
   const std::wstring amount = EncouragerWide(amt);
   const std::wstring label = UiText(L"今日已赚", L"Earned today");
   const float progress = static_cast<float>(status.progress);
