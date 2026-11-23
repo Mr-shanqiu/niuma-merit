@@ -546,7 +546,6 @@ static NSImage *NMEncouragerArtwork(void) {
 
 @class MeritController;
 @class MeritCalendarView;
-@class NMCurveView;
 @class NMCultivationLevelView;
 static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, void *);
 
@@ -655,11 +654,8 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @property(nonatomic, strong) NSPopUpButton *encouragerEndMinuteControl;
 @property(nonatomic, strong) NSTextField *encouragerRateLabel;  // FB8 每秒金额实时预览
 // F4 牛马曲线（FB1 起并入功德日历窗口，作为「日曆 / 曲線」分段视图）
-@property(nonatomic, strong) NMCurveView *curveView;
 @property(nonatomic, strong) NSSegmentedControl *calendarModeControl;
 @property(nonatomic, strong) NSView *calendarPageView;  // 日历页容器（含导航按钮）
-@property(nonatomic, strong) NSView *curvePageView;     // 曲线页容器（含日/周/月 + 导出）
-@property(nonatomic, strong) NSSegmentedControl *curveModeControl;
 // F3 勋章墙
 @property(nonatomic, strong) NSWindow *medalWindow;
 @property(nonatomic, strong) NSTextField *medalSummaryLabel;
@@ -866,9 +862,6 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 - (void)recordCurveIncrementAtWall:(std::time_t)wall;
 - (void)pruneCurveDays;
 - (NSDictionary *)curveDayForDisplay:(NSString *)key;
-- (void)showMeritCurve:(id)sender;
-- (void)calendarModeChanged:(id)sender;
-- (void)curveModeChanged:(id)sender;
 // F3 勋章
 - (void)loadMedalsState;
 - (void)backfillMedalsFromHistory;
@@ -1299,18 +1292,6 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
 @end
 
 #import "calendar_view.mm"
-
-// F4 曲线视图：日（96 桶）/ 周（7 天日总）/ 月（当月日总）。
-@interface NMCurveView : NSView
-@property(nonatomic, weak) MeritController *controller;
-@property(nonatomic) NSInteger mode;  // 0=日 1=周 2=月
-- (void)refreshToToday;
-@end
-
-#import "curve_view.mm"
-
-// FB4 勋章徽章视图（程序化金属徽章）。
-#import "medal_badge_view.mm"
 
 // FB10 修行等级视图（单一等级徽标 + 进度环）。
 #import "cultivation_level_view.mm"
@@ -4485,37 +4466,8 @@ static NSString *NMCultivationTitle(int level) {
   [self.calendarWindow makeKeyAndOrderFront:nil];
 }
 
-- (void)calendarModeChanged:(id)sender {
-  (void)sender;
-  const BOOL curve = self.calendarModeControl.selectedSegment == 1;
-  self.calendarPageView.hidden = curve;
-  self.curvePageView.hidden = !curve;
-  if (curve) {
-    [self ensureCurrentDay];
-    [self.curveView refreshToToday];
-  } else {
-    [self.calendarView setNeedsDisplay:YES];
-  }
-}
-
 - (void)shiftCalendarMonth:(NSButton *)sender {
   [self.calendarView shiftMonth:sender.tag];
-}
-
-// ---- F4 牛马曲线（FB1：并入功德日历窗口的「曲線」页，不再单独开窗）----
-- (void)showMeritCurve:(id)sender {
-  (void)sender;
-  [self showMeritCalendar:sender];
-  if (self.calendarModeControl.selectedSegment != 1) {
-    self.calendarModeControl.selectedSegment = 1;
-    [self calendarModeChanged:self.calendarModeControl];
-  }
-}
-
-- (void)curveModeChanged:(id)sender {
-  (void)sender;
-  self.curveView.mode = self.curveModeControl.selectedSegment;
-  [self.curveView refreshToToday];
 }
 
 - (void)selectAppearance:(NSButton *)sender {
