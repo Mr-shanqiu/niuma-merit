@@ -17,7 +17,6 @@
 #pragma comment(lib, "dwmapi.lib")
 
 #include "appearance_pack.h"
-#include "curve_view.h"
 #include "render_cache.h"
 #include "runtime/input_service.h"
 #include "runtime/storage_service.h"
@@ -175,7 +174,6 @@ constexpr UINT_PTR kMenuGuide = 7;
 constexpr UINT_PTR kMenuOffwork = 8;
 constexpr UINT_PTR kMenuVisibility = 9;
 constexpr UINT_PTR kMenuAutoHide = 10;
-constexpr UINT_PTR kMenuCurve = 11;
 constexpr UINT_PTR kMenuEncourager = 12;
 constexpr UINT_PTR kMenuMedals = 13;
 constexpr UINT_PTR kMenuAppearanceScale = 14;
@@ -321,7 +319,6 @@ SYSTEMTIME CalendarToday();
 void ClampWindowToWorkArea();
 bool PositionReminderWindow(HWND popup);
 void ShowMedals(HWND owner);
-niuma::windows::window::MedalViewData BuildMedalViewData();
 void ApplyWindowVisibility();
 void RefreshFullscreenVisibility();
 
@@ -1806,74 +1803,15 @@ void ApplyEncouragerLayout() {
   RenderLayeredWindow(GetTickCount64());
 }
 
-// ---- F4 曲线窗口：数据装配（app 只负责喂数据，绘制在 curve_view.cpp）----
 
 // 取某本地日的曲线桶与覆盖位图；无 0.9.6 采集记录返回 false。
-bool CurveDayForDisplay(const std::string& key, std::vector<std::uint64_t>* buckets,
-                        std::vector<bool>* coverage) {
-  if (!gMetricsReady || !buckets || !coverage) return false;
-  const auto& days = gMetrics.root().curve_days;
-  const auto it = days.find(key);
-  if (it == days.end()) return false;
-  buckets->assign(it->second.day.buckets.begin(), it->second.day.buckets.end());
-  coverage->resize(96);
-  for (int i = 0; i < 96; ++i)
-    (*coverage)[static_cast<std::size_t>(i)] = it->second.day.coverage.Get(i);
-  return true;
-}
 
 std::wstring WideFromUtf8(const std::string& value) {
   return std::wstring(value.begin(), value.end());
 }
 
 // 装配当前曲线视图快照（mode 决定内容）。today 为当前本地日期。
-niuma::windows::window::CurveViewData BuildCurveData(niuma::windows::window::CurveViewMode mode,
-                                                     const SYSTEMTIME& today) {
-  using niuma::windows::window::CurveViewData;
-  using niuma::windows::window::CurveViewMode;
-  CurveViewData data;
-  data.mode = mode;
-  data.year = today.wYear;
-  data.month = today.wMonth;
-  data.day = today.wDay;
-  const std::wstring todayKeyW = DateKey(today);
-  data.todayKey = todayKeyW;
-  data.todayTotal = ReadDailyTotal(todayKeyW);
-  const std::string todayNarrow(todayKeyW.begin(), todayKeyW.end());
-  if (mode == CurveViewMode::Day) {
-    std::vector<std::uint64_t> buckets;
-    std::vector<bool> coverage;
-    if (CurveDayForDisplay(todayNarrow, &buckets, &coverage)) {
-      data.dayBuckets = std::move(buckets);
-      data.dayCoverage = std::move(coverage);
-      std::uint64_t coveredSum = 0;
-      for (std::size_t i = 0; i < data.dayCoverage.size(); ++i)
-        if (data.dayCoverage[i]) coveredSum += data.dayBuckets[i];
-      data.dayPartial = data.todayTotal > coveredSum;
-    }
-    return data;
-  }
-  std::vector<std::string> keys;
-  if (mode == CurveViewMode::Week) {
-    keys = niuma::curve::WeekDayKeys(today.wYear, today.wMonth, today.wDay);
-    for (int i = 0; i < 7; ++i) data.rangeLabels.emplace_back(WeekdayShortLabel(i));
-  } else {
-    keys = niuma::curve::MonthDayKeys(today.wYear, today.wMonth);
-    for (std::size_t i = 0; i < keys.size(); ++i)
-      data.rangeLabels.push_back(std::to_wstring(i + 1));
-  }
-  for (const std::string& key : keys) {
-    const std::wstring wide = WideFromUtf8(key);
-    data.rangeValues.push_back(ReadDailyTotal(wide));
-  }
-  return data;
-}
 
-void ShowMeritCurve(HWND owner) {
-  const SYSTEMTIME today = CalendarToday();
-  const auto data = BuildCurveData(niuma::windows::window::CurveViewMode::Day, today);
-  niuma::windows::window::ShowCurveWindow(owner, data);
-}
 
 // ---- F1 形象大小：prefs 载入 / 应用 / 连续滑块 ----
 
@@ -2156,62 +2094,9 @@ void EvaluateMedals() {
   if (changed) {
     gMedalDirty = true;
     FlushMedals();
-    if (niuma::windows::window::MedalWindowOpen())
-      niuma::windows::window::RefreshMedalWindow(BuildMedalViewData());
   }
 }
 
-std::wstring MedalPeriodLabel(niuma::medal::Period period) {
-  switch (period) {
-    case niuma::medal::Period::Day: return UiText(L"日", L"Day");
-    case niuma::medal::Period::Week: return UiText(L"周", L"Week");
-    case niuma::medal::Period::Month: return UiText(L"月", L"Month");
-  }
-  return UiText(L"日", L"Day");
-}
-
-std::wstring MedalTierLabel(int tier) {
-  if (tier == 0) return UiText(L"铜", L"Bronze");
-  if (tier == 1) return UiText(L"银", L"Silver");
-  return UiText(L"金", L"Gold");
-}
-
-niuma::windows::window::MedalViewData BuildMedalViewData() {
-  using niuma::windows::window::MedalCell;
-  using niuma::windows::window::MedalViewData;
-  MedalViewData data;
-  const SYSTEMTIME today = CalendarToday();
-  const auto thresholds = niuma::medal::BuiltinThresholds();
-  int litCount = 0;
-  for (int row = 0; row < 3; ++row) {
-    const auto period = static_cast<niuma::medal::Period>(row);
-    for (int tier = 0; tier < 3; ++tier) {
-      const int index = row * 3 + tier;
-      MedalCell& cell = data.cells[static_cast<std::size_t>(index)];
-      const std::string keyName = niuma::medal::MedalKey(period, tier);
-      cell.key = WideFromUtf8(keyName);
-      cell.periodLabel = MedalPeriodLabel(period);
-      cell.tierLabel = MedalTierLabel(tier);
-      cell.threshold = thresholds.For(period)[tier];
-      cell.currentValue = MedalPeriodValue(period, today);
-      const auto it = gMedalEarned.find(keyName);
-      if (it != gMedalEarned.end() && it->second.lit) {
-        cell.lit = true;
-        cell.firstEarnedDay = WideFromUtf8(it->second.first_earned_day);
-        cell.count = it->second.count;
-        ++litCount;
-      }
-    }
-  }
-  data.litCount = litCount;
-  data.achievementLit = niuma::medal::AllMedalsLit(gMedalEarned);
-  const auto achievement = gMedalEarned.find("achievement.all");
-  if (achievement != gMedalEarned.end() && achievement->second.lit)
-    data.achievementFirstDay = WideFromUtf8(achievement->second.first_earned_day);
-  data.thresholdsVersion = WideFromUtf8(niuma::metrics::kThresholdsVersion);
-  data.productName = WindowTitle();
-  return data;
-}
 
 static std::wstring CultGroupNum(std::uint64_t v) {
   std::wstring s = std::to_wstring(v), out; const int n = static_cast<int>(s.size());
@@ -2249,33 +2134,6 @@ void ShowMedals(HWND owner) {
   niuma::windows::window::ShowCultivationWindow(owner, d);
 }
 
-// 曲线窗口打开时随数据刷新（保留用户当前选择的视图）。
-void RefreshCurveIfOpen() {
-  if (!niuma::windows::window::CurveWindowOpen()) return;
-  const SYSTEMTIME today = CalendarToday();
-  const auto data = BuildCurveData(niuma::windows::window::CurrentCurveMode(), today);
-  niuma::windows::window::RefreshCurveWindow(data);
-}
-
-// 曲线窗口导出按钮 → owner 收到 kCurveExportMessage。
-void ExportCurrentCurve(HWND owner) {
-  const SYSTEMTIME today = CalendarToday();
-  // 需要知道当前窗口的视图模式：重新装配时沿用窗口内部模式（由 agent 提供）。
-  const auto mode = niuma::windows::window::CurrentCurveMode();
-  const auto data = BuildCurveData(mode, today);
-  std::wstring error;
-  const bool chinese = IsChineseUi();
-  const std::wstring name = L"niuma-merit-curve.png";
-  if (!niuma::windows::window::ExportCurvePng(owner, data, name,
-          WindowTitle(), L"NiuMa Merit", chinese, &error)) {
-    if (!error.empty()) {
-      niuma::ui::Message(owner, UiText(L"未能生成分享图，请稍后重试。",
-                                       L"Could not generate the share image. Please try again."),
-          WindowTitle(), MB_OK | MB_ICONWARNING);
-    }
-    return;
-  }
-}
 
 bool LoadPngResource(int resourceId, PngResource& output) {
   HRSRC resource =
@@ -3654,7 +3512,6 @@ void ApplyInputView(const input_runtime::InputServiceSnapshot& snapshot) {
     ArmDataStorageTimer();
     if (!wasRunning || !gState.striking) RenderLayeredWindow(now);
     if (gCalendar.window) InvalidateRect(gCalendar.window, nullptr, FALSE);
-    RefreshCurveIfOpen();
     EvaluateMedals();
   }
   if (previousDate != gState.currentDay) RequestInputLedger();
@@ -3718,8 +3575,7 @@ void ConsumeInputSnapshot() {
         PumpDataStorage();
         PumpMetrics();
         if (gCalendar.window) InvalidateRect(gCalendar.window, nullptr, FALSE);
-        RefreshCurveIfOpen();
-      } else if (ledger.header.status == input_core::LedgerResultStatus::EpochMismatch ||
+          } else if (ledger.header.status == input_core::LedgerResultStatus::EpochMismatch ||
                  ledger.header.status == input_core::LedgerResultStatus::Complete) {
         RequestInputLedger();
       } else {
@@ -6467,10 +6323,6 @@ LRESULT CALLBACK WindowProcedure(
       ConsumeInputSnapshot();
       return 0;
 
-    case niuma::windows::window::kCurveExportMessage:
-      ExportCurrentCurve(window);
-      return 0;
-
     case kAppearanceReadyMessage:
       PumpAppearanceResources();
       if (gDataStorage.closing) ContinueClientClose(window);
@@ -6618,8 +6470,7 @@ LRESULT CALLBACK WindowProcedure(
           RequestInputLedger();
         } else if (EnsureCurrentDay()) RenderLayeredWindow(GetTickCount64());
         if (gCalendar.window != nullptr) InvalidateRect(gCalendar.window, nullptr, FALSE);
-        RefreshCurveIfOpen();
-        EvaluateMedals();
+            EvaluateMedals();
         return 0;
       }
       if (wParam == kAnimationTimer && gVisibility.hidden()) {
