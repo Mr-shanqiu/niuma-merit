@@ -192,13 +192,36 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
 }
 
 @interface NMOdometerLayer ()
-- (void)startTimerIfNeeded;
+- (void)applyRunState;
+- (void)enterCA;
+- (void)enterStatic;
+- (void)teardownSlots;
 - (void)pauseOdometer;
 - (void)snapToCurrent;
+- (void)rebuild;
+- (void)tick:(NSTimer *)timer;
+- (void)staticTick:(NSTimer *)timer;
 - (void)osSuspend:(NSNotification *)n;
 - (void)osResume:(NSNotification *)n;
 @end
 
+// 回退开关（§R1.4）：环境变量 NIUMA_ODOMETER_STATIC=1，或
+// `defaults write cn.niuma.merit NMOdometerForceStatic -bool YES`，强制使用静态跳字显示。
+static BOOL NMOdoForceStatic(void) {
+  if (getenv("NIUMA_ODOMETER_STATIC")) return YES;
+  return [NSUserDefaults.standardUserDefaults boolForKey:@"NMOdometerForceStatic"];
+}
+
+// 2026-11-25 修复（AWS Quick）：
+// 1) 数字空白：首次激活时 configure 在图层仍隐藏的状态下返回，未设置行高；
+//    随后 setHidden:NO 用行高 0 生成数字带位图（得到 NULL），数字槽没有内容，
+//    只剩符号/逗号/小数点。现改为 rebuild 内自行取尺寸，并在确定最终字号后再生成数字带。
+// 2) 字号不一致：数字带原先按未缩放字号生成，而槽位按自动缩小后的字号排版，
+//    长金额时数字被横向挤压；位数变化重建时也不会重新生成。现统一按最终字号生成。
+// 3) 重影：静态模式 drawInContext 画出的整串位图在切回滚动后未清除，会叠在数字带下面。
+//    进入滚动模式时清空自身 contents。
+// 4) 静态模式（减少动态效果 / 回退开关）原先只画一次，金额不再增长；现按 1 秒刷新。
+// 5) 启停只有一个入口 applyRunState；hidden 只在真正变化时触发；相同配置运行中不重启。
 @implementation NMOdometerLayer {
   NSMutableArray<CALayer *> *_slotLayers;
   NSMutableArray<CALayer *> *_stripLayers;
@@ -207,6 +230,7 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
   CALayer *_staticLayer;
   CGImageRef _stripCG;
   CGFloat _cellW, _cellH, _lineH, _pad;
+  CGFloat _builtW, _builtH, _builtScale;
   NSInteger _builtIntDigits, _builtDec;
   BOOL _running, _caMode, _suspended;
   BOOL _cfgActive; double _cfgWageTick; int _cfgStart, _cfgTotal, _cfgDec; NSString *_cfgSymbol;
@@ -219,7 +243,7 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
     self.masksToBounds = YES;
     _slotLayers = [NSMutableArray array]; _stripLayers = [NSMutableArray array];
     _curDigit = [NSMutableArray array]; _slotExp = [NSMutableArray array];
-    _builtIntDigits = -1; _builtDec = -1; _pad = 1.0; _suspended = NO;
+    _builtIntDigits = -1; _builtDec = -1; _pad = 1.0; _suspended = NO; _cfgDec = -1;
     NSNotificationCenter *nc = [NSWorkspace sharedWorkspace].notificationCenter;
     [nc addObserver:self selector:@selector(osSuspend:) name:NSWorkspaceWillSleepNotification object:nil];
     [nc addObserver:self selector:@selector(osResume:) name:NSWorkspaceDidWakeNotification object:nil];
@@ -235,24 +259,82 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
   [[NSDistributedNotificationCenter defaultCenter] removeObserver:self];
   if (_stripCG) CGImageRelease(_stripCG);
 }
-- (void)osSuspend:(NSNotification *)n { (void)n; _suspended = YES; [self pauseOdometer]; }
-- (void)osResume:(NSNotification *)n { (void)n; _suspended = NO; [self startTimerIfNeeded]; }
+// 本图层自身的内容/显隐变化不做隐式淡入淡出（静态模式每秒刷新时不闪）。
+- (id<CAAction>)actionForKey:(NSString *)event {
+  if ([event isEqualToString:@"contents"] || [event isEqualToString:@"hidden"] ||
+      [event isEqualToString:@"sublayers"]) return nil;
+  return [super actionForKey:event];
+}
+- (void)osSuspend:(NSNotification *)n { (void)n; _suspended = YES; [self applyRunState]; }
+- (void)osResume:(NSNotification *)n { (void)n; _suspended = NO; [self applyRunState]; }
 - (void)pauseOdometer { [self.timer invalidate]; self.timer = nil; _running = NO; }
-- (void)startTimerIfNeeded {
-  if (_running || !self.active || self.hidden || _suspended || [self reduceMotion]) return;
-  _caMode = YES;
-  if (_slotLayers.count == 0) { [self buildStripImageIfNeeded]; [self rebuild]; }
-  [self snapToCurrent];
+- (void)stop { [self pauseOdometer]; }
+- (BOOL)reduceMotion { if (@available(macOS 10.12, *)) return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion; return NO; }
+- (void)setHidden:(BOOL)hidden {
+  const BOOL changed = (hidden != self.hidden);
+  [super setHidden:hidden];
+  if (changed) [self applyRunState];   // 布局每次都会赋值 hidden；只有真正变化才启停
+}
+- (void)setContentsScale:(CGFloat)scale {
+  const BOOL changed = ABS(scale - self.contentsScale) > 0.01;
+  [super setContentsScale:scale];
+  if (changed && _caMode && _slotLayers.count) [self rebuild];   // 形象大小/屏幕倍率变化：按新分辨率重建字形
+}
+- (void)startTimerWithInterval:(NSTimeInterval)interval selector:(SEL)selector {
+  [self pauseOdometer];
+  NSTimer *t = [NSTimer timerWithTimeInterval:interval target:self selector:selector userInfo:nil repeats:YES];
+  t.tolerance = interval * 0.25;
+  [NSRunLoop.mainRunLoop addTimer:t forMode:NSRunLoopCommonModes];
+  [NSRunLoop.mainRunLoop addTimer:t forMode:NSModalPanelRunLoopMode];
+  self.timer = t;
   _running = YES;
-  self.timer = [NSTimer timerWithTimeInterval:0.2 target:self selector:@selector(tick:) userInfo:nil repeats:YES];
-  self.timer.tolerance = 0.05;
-  [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
-  [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSModalPanelRunLoopMode];
+}
+
+// 唯一的启停入口：按「激活 / 可见 / 未锁屏未休眠 / 减少动态 / 回退开关」决定滚动、静态或停表。
+- (void)applyRunState {
+  [self pauseOdometer];
+  if (!self.active || self.hidden || _suspended) return;   // 停表；恢复时按当前墙钟直接落位，不补动画
+  if ([self reduceMotion] || NMOdoForceStatic()) [self enterStatic];
+  else [self enterCA];
+}
+- (void)enterCA {
+  const BOOL wasCA = _caMode;
+  _caMode = YES;
+  const CGFloat scale = self.contentsScale > 0 ? self.contentsScale : 2.0;
+  if (!wasCA || _slotLayers.count == 0 || _builtW != NSWidth(self.bounds) ||
+      _builtH != NSHeight(self.bounds) || _builtScale != scale) {
+    [self rebuild];
+  }
+  if (_slotLayers.count == 0) { [self enterStatic]; return; }   // 尺寸无效、位图生成失败：退回静态，保证有字
+  [CATransaction begin]; [CATransaction setDisableActions:YES];
+  self.contents = nil;   // 清掉静态模式留下的整串位图，避免与数字带叠出重影
+  for (CALayer *l in _slotLayers) l.hidden = NO;
+  if (_staticLayer) _staticLayer.hidden = NO;
+  [CATransaction commit];
+  [self snapToCurrent];
+  [self startTimerWithInterval:0.2 selector:@selector(tick:)];
   [self tick:nil];
 }
-- (void)setHidden:(BOOL)hidden { [super setHidden:hidden]; if (hidden) [self pauseOdometer]; else [self startTimerIfNeeded]; }
-- (BOOL)reduceMotion { if (@available(macOS 10.12, *)) return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion; return NO; }
-- (void)stop { [self.timer invalidate]; self.timer = nil; _running = NO; }
+- (void)teardownSlots {
+  [CATransaction begin]; [CATransaction setDisableActions:YES];
+  for (CALayer *l in _slotLayers) [l removeFromSuperlayer];
+  if (_staticLayer) _staticLayer.hidden = YES;
+  [CATransaction commit];
+  [_slotLayers removeAllObjects]; [_stripLayers removeAllObjects];
+  [_curDigit removeAllObjects]; [_slotExp removeAllObjects];
+  _builtIntDigits = -1; _builtDec = -1;
+}
+- (void)enterStatic {
+  _caMode = NO;
+  [self teardownSlots];
+  [self setNeedsDisplay];
+  [self startTimerWithInterval:1.0 selector:@selector(staticTick:)];
+}
+- (void)staticTick:(NSTimer *)timer {
+  (void)timer;
+  [self setNeedsDisplay];
+  if (self.totalSeconds > 0 && [self currentTickValue] >= (self.wageTick - 0.5)) [self pauseOdometer];
+}
 
 - (double)currentTickValue {
   if (self.totalSeconds <= 0 || self.wageTick <= 0) return 0.0;
@@ -278,38 +360,38 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
 - (int)digitForExp:(int)exp S:(unsigned long long)S {
   unsigned long long d = S; for (int i = 0; i < exp; ++i) d /= 10ULL; return (int)(d % 10ULL);
 }
-- (void)buildStripImageIfNeeded {
+// 数字带：竖排 0–9、0–9、0（21 格），用「最终」字号与槽宽生成，和静态符号层同一基线。
+- (void)buildStripWithFont:(NSFont *)font attrs:(NSDictionary *)attrs cellW:(CGFloat)cellW scale:(CGFloat)scale {
   if (_stripCG) { CGImageRelease(_stripCG); _stripCG = NULL; }
-  CGFloat scale = self.contentsScale > 0 ? self.contentsScale : 2.0;
-  NSFont *font = [NSFont monospacedDigitSystemFontOfSize:self.fontSize weight:NSFontWeightRegular];
-  CGFloat cellW = ceil([@"0" sizeWithAttributes:@{NSFontAttributeName : font}].width) + _pad + 1.0;
-  NSDictionary *attrs = @{NSFontAttributeName : font, NSForegroundColorAttributeName : self.numberColor};
-  CGFloat baseline = (_lineH - (font.ascender - font.descender)) / 2.0 - font.descender;
-  _stripCG = NMOdoCreateImage(cellW, 21 * _lineH, scale, ^(NSGraphicsContext *g) {
+  const CGFloat lineH = _lineH;
+  const CGFloat baseline = (lineH - (font.ascender - font.descender)) / 2.0 - font.descender;
+  _stripCG = NMOdoCreateImage(cellW, 21 * lineH, scale, ^(NSGraphicsContext *g) {
+    (void)g;
     for (int i = 0; i < 21; ++i) {
-      NSString *s = [NSString stringWithFormat:@"%d", i % 10];
-      CGFloat sw = [s sizeWithAttributes:attrs].width;
-      [s drawAtPoint:NSMakePoint((cellW - sw) / 2.0, i * self->_lineH + baseline) withAttributes:attrs];
+      NSString *str = [NSString stringWithFormat:@"%d", i % 10];
+      CGFloat sw = [str sizeWithAttributes:attrs].width;
+      [str drawAtPoint:NSMakePoint((cellW - sw) / 2.0, i * lineH + baseline) withAttributes:attrs];
     }
   });
-  _cellW = cellW;
 }
-- (void)buildStaticImageWithFont:(NSFont *)font attrs:(NSDictionary *)attrs layout:(NSArray<NSDictionary *> *)items width:(CGFloat)W {
-  CGFloat scale = self.contentsScale > 0 ? self.contentsScale : 2.0;
-  CGFloat baseline = (_lineH - (font.ascender - font.descender)) / 2.0 - font.descender;
-  CGImageRef img = NMOdoCreateImage(W, _lineH, scale, ^(NSGraphicsContext *g) {
+- (void)buildStaticImageWithFont:(NSFont *)font attrs:(NSDictionary *)attrs layout:(NSArray<NSDictionary *> *)items
+                           width:(CGFloat)W scale:(CGFloat)scale {
+  const CGFloat lineH = _lineH;
+  const CGFloat baseline = (lineH - (font.ascender - font.descender)) / 2.0 - font.descender;
+  CGImageRef img = NMOdoCreateImage(W, lineH, scale, ^(NSGraphicsContext *g) {
+    (void)g;
     for (NSDictionary *it in items) {
       NSString *t = it[@"text"]; CGFloat x = [it[@"x"] doubleValue];
       if (t.length) [t drawAtPoint:NSMakePoint(x, baseline) withAttributes:attrs];
     }
   });
   if (!_staticLayer) { _staticLayer = [CALayer layer]; _staticLayer.anchorPoint = CGPointZero; [self addSublayer:_staticLayer]; }
-  _staticLayer.frame = CGRectMake(0, 0, W, _lineH);
+  _staticLayer.frame = CGRectMake(0, 0, W, lineH);
   _staticLayer.contentsScale = scale;
   _staticLayer.contents = (__bridge id)img;
   if (img) CGImageRelease(img);
 }
-- (void)addSlotX:(CGFloat)x exp:(int)exp {
+- (void)addSlotX:(CGFloat)x exp:(int)exp scale:(CGFloat)scale {
   CALayer *slot = [CALayer layer];
   slot.frame = CGRectMake(x, 0, _cellW, _cellH);
   slot.masksToBounds = YES;
@@ -317,7 +399,7 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
   CALayer *strip = [CALayer layer];
   strip.anchorPoint = CGPointZero;
   strip.frame = CGRectMake(0, 0, _cellW, 21 * _cellH);
-  strip.contentsScale = self.contentsScale > 0 ? self.contentsScale : 2.0;
+  strip.contentsScale = scale;
   strip.contents = (__bridge id)_stripCG;
   [slot addSublayer:strip];
   [_slotLayers addObject:slot]; [_stripLayers addObject:strip];
@@ -326,81 +408,80 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
 - (void)snapToCurrent {
   if (!_caMode) return;
   unsigned long long S = [self currentS];
-  for (NSInteger i = 0; i < _slotLayers.count; ++i) {
+  [CATransaction begin]; [CATransaction setDisableActions:YES];
+  for (NSInteger i = 0; i < (NSInteger)_slotLayers.count; ++i) {
     int exp = [_slotExp[i] intValue];
     int d = [self digitForExp:exp S:S];
     _curDigit[i] = @(d);
     CALayer *strip = _stripLayers[i];
-    [CATransaction begin]; [CATransaction setDisableActions:YES];
+    [strip removeAllAnimations];
     strip.position = CGPointMake(0, -(CGFloat)d * _cellH);
-    [CATransaction commit];
   }
+  [CATransaction commit];
 }
 - (void)rebuild {
-  for (CALayer *l in _slotLayers) [l removeFromSuperlayer];
-  [_slotLayers removeAllObjects]; [_stripLayers removeAllObjects];
-  [_curDigit removeAllObjects]; [_slotExp removeAllObjects];
+  [self teardownSlots];
   const CGFloat W = NSWidth(self.bounds);
   _lineH = NSHeight(self.bounds);
+  const CGFloat scale = self.contentsScale > 0 ? self.contentsScale : 2.0;
+  if (W <= 0 || _lineH <= 0) return;   // 尺寸未就绪：不生成（enterCA 会退回静态）
   const int dec = self.decimals < 0 ? 0 : self.decimals;
   unsigned long long intPart = [self currentS];
   for (int i = 0; i < dec; ++i) intPart /= 10ULL;
   NSInteger intDigits = NMOdoDigits(intPart); if (intDigits < 1) intDigits = 1;
   NSString *symbol = self.symbol ?: @"";
+  NSInteger commas = (intDigits - 1) / 3;
   CGFloat use = self.fontSize, cellW = 0, symbolW = 0, commaW = 0, dotW = 0, totalW = 0;
   NSFont *font = nil; NSDictionary *attrs = nil;
-  for (int pass = 0; pass < 6; ++pass) {
+  for (int pass = 0; pass < 7; ++pass) {
     font = [NSFont monospacedDigitSystemFontOfSize:use weight:NSFontWeightRegular];
     attrs = @{NSFontAttributeName : font, NSForegroundColorAttributeName : self.numberColor};
     cellW = ceil([@"0" sizeWithAttributes:attrs].width) + _pad + 1.0;
     symbolW = symbol.length ? [symbol sizeWithAttributes:attrs].width : 0.0;
     commaW = ceil([@"," sizeWithAttributes:attrs].width);
     dotW = ceil([@"." sizeWithAttributes:attrs].width);
-    NSInteger commas = (intDigits - 1) / 3;
     totalW = symbolW + cellW * (intDigits + dec) + commaW * commas + (dec > 0 ? dotW : 0.0);
     if (totalW <= W - 12.0 || use <= 9.0) break;
     use *= (W - 12.0) / totalW; if (use < 9.0) use = 9.0;
   }
-  font = [NSFont monospacedDigitSystemFontOfSize:use weight:NSFontWeightRegular];
-  attrs = @{NSFontAttributeName : font, NSForegroundColorAttributeName : self.numberColor};
-  cellW = ceil([@"0" sizeWithAttributes:attrs].width) + _pad + 1.0;
-  symbolW = symbol.length ? [symbol sizeWithAttributes:attrs].width : 0.0;
-  commaW = ceil([@"," sizeWithAttributes:attrs].width);
-  dotW = ceil([@"." sizeWithAttributes:attrs].width);
-  NSInteger commas = (intDigits - 1) / 3;
-  totalW = symbolW + cellW * (intDigits + dec) + commaW * commas + (dec > 0 ? dotW : 0.0);
   _cellW = cellW; _cellH = _lineH;
-  CGFloat x = (W - totalW) / 2.0; if (x < 2) x = 2;
-  NSMutableArray<NSDictionary *> *statics = [NSMutableArray array];
-  if (symbolW > 0) { [statics addObject:@{@"text": symbol, @"x": @(x)}]; x += symbolW; }
-  for (NSInteger k = intDigits - 1; k >= 0; --k) {
-    if (k < intDigits - 1 && ((k + 1) % 3 == 0)) { [statics addObject:@{@"text": @",", @"x": @(x)}]; x += commaW; }
-    [self addSlotX:x exp:(int)(k + dec)];
-    x += cellW;
+  [CATransaction begin]; [CATransaction setDisableActions:YES];
+  [self buildStripWithFont:font attrs:attrs cellW:cellW scale:scale];
+  if (_stripCG) {
+    CGFloat x = (W - totalW) / 2.0; if (x < 2) x = 2;
+    NSMutableArray<NSDictionary *> *statics = [NSMutableArray array];
+    if (symbolW > 0) { [statics addObject:@{@"text": symbol, @"x": @(x)}]; x += symbolW; }
+    for (NSInteger k = intDigits - 1; k >= 0; --k) {
+      if (k < intDigits - 1 && ((k + 1) % 3 == 0)) { [statics addObject:@{@"text": @",", @"x": @(x)}]; x += commaW; }
+      [self addSlotX:x exp:(int)(k + dec) scale:scale];
+      x += cellW;
+    }
+    if (dec > 0) { [statics addObject:@{@"text": @".", @"x": @(x)}]; x += dotW; }
+    for (int j = 1; j <= dec; ++j) { [self addSlotX:x exp:(int)(dec - j) scale:scale]; x += cellW; }
+    [self buildStaticImageWithFont:font attrs:attrs layout:statics width:W scale:scale];
+    _staticLayer.hidden = NO;
+    _builtIntDigits = intDigits; _builtDec = dec; _builtW = W; _builtH = _lineH; _builtScale = scale;
   }
-  if (dec > 0) { [statics addObject:@{@"text": @".", @"x": @(x)}]; x += dotW; }
-  for (int j = 1; j <= dec; ++j) { [self addSlotX:x exp:(int)(dec - j)]; x += cellW; }
-  [self buildStaticImageWithFont:font attrs:attrs layout:statics width:W];
-  _builtIntDigits = intDigits; _builtDec = dec;
+  [CATransaction commit];
   [self snapToCurrent];
 }
 - (void)tick:(NSTimer *)timer {
   (void)timer;
   if (!_caMode) return;
   if (self.totalSeconds > 0 && [self currentTickValue] >= (self.wageTick - 0.5)) {
-    [self snapToCurrent]; [self pauseOdometer]; return;
+    [self snapToCurrent]; [self pauseOdometer]; return;   // 下班：停在日薪
   }
   unsigned long long S = [self currentS];
   unsigned long long intPart = S; const int dec = self.decimals < 0 ? 0 : self.decimals;
   for (int i = 0; i < dec; ++i) intPart /= 10ULL;
   NSInteger idig = NMOdoDigits(intPart); if (idig < 1) idig = 1;
-  if (idig != _builtIntDigits || dec != _builtDec) { [self rebuild]; return; }
+  if (idig != _builtIntDigits || dec != _builtDec) { [self rebuild]; return; }   // 位数变化：按新字号整体重建
   const NSTimeInterval dur = 0.12;
-  for (NSInteger i = 0; i < _slotLayers.count; ++i) {
+  for (NSInteger i = 0; i < (NSInteger)_slotLayers.count; ++i) {
     int exp = [_slotExp[i] intValue];
     int target = [self digitForExp:exp S:S];
     int cur = [_curDigit[i] intValue];
-    int steps = (target - cur + 10) % 10;
+    int steps = (target - cur + 10) % 10;   // 只向前滚，9→0 为前进 1 格
     if (steps == 0) continue;
     _curDigit[i] = @(target);
     CALayer *strip = _stripLayers[i];
@@ -417,32 +498,20 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
     [strip addAnimation:a forKey:@"roll"];
   }
 }
-- (void)clearDynamic {
-  _caMode = NO;
-  for (CALayer *l in _slotLayers) l.hidden = YES;
-  if (_staticLayer) _staticLayer.hidden = YES;
-  [self setNeedsDisplay];
-}
 - (void)configureActive:(BOOL)active wageTick:(double)wageTick startSecond:(int)startSecond
            totalSeconds:(int)totalSeconds symbol:(NSString *)symbol decimals:(int)decimals {
-  BOOL same = _running && active && active == _cfgActive && wageTick == _cfgWageTick &&
-      startSecond == _cfgStart && totalSeconds == _cfgTotal && decimals == _cfgDec &&
-      [(symbol ?: @"") isEqualToString:(_cfgSymbol ?: @"")];
-  if (same) return;
+  NSString *sym = symbol ?: @"";
+  const BOOL sameCfg = active == _cfgActive && wageTick == _cfgWageTick && startSecond == _cfgStart &&
+      totalSeconds == _cfgTotal && decimals == _cfgDec && [sym isEqualToString:(_cfgSymbol ?: @"")];
+  if (sameCfg && _running) return;   // 相同配置且正在运行：不重启定时器、不打断动画
+  const BOOL layoutChanged = decimals != _cfgDec || ![sym isEqualToString:(_cfgSymbol ?: @"")];
   self.active = active; self.wageTick = wageTick; self.startSecond = startSecond;
-  self.totalSeconds = totalSeconds; self.symbol = symbol ?: @""; self.decimals = decimals;
+  self.totalSeconds = totalSeconds; self.symbol = sym; self.decimals = decimals;
   _cfgActive = active; _cfgWageTick = wageTick; _cfgStart = startSecond; _cfgTotal = totalSeconds;
-  _cfgDec = decimals; _cfgSymbol = [symbol copy] ?: @"";
-  [self stop];
-  if (!active || [self reduceMotion] || self.hidden) { [self clearDynamic]; return; }
-  _caMode = YES;
-  _lineH = NSHeight(self.bounds); _pad = 1.0;
-  CGFloat bs = NSScreen.mainScreen ? NSScreen.mainScreen.backingScaleFactor : 2.0; if (bs < 1.0) bs = 2.0;
-  self.contentsScale = bs;
-  [self buildStripImageIfNeeded];
-  [self rebuild];
-  if (_staticLayer) _staticLayer.hidden = NO;
-  [self startTimerIfNeeded];
+  _cfgDec = decimals; _cfgSymbol = [sym copy];
+  if (layoutChanged) { [self teardownSlots]; _caMode = NO; }   // 货币/小数位变化：下次进入滚动时按新排版重建
+  [self applyRunState];
+  if (!_caMode) [self setNeedsDisplay];
 }
 - (void)drawInContext:(CGContextRef)ctx {
   if (_caMode) return;
