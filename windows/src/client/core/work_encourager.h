@@ -132,6 +132,13 @@ inline int ExponentForCode(const std::string& code) {
   return 2;
 }
 
+// D28（2026-11-25 用户确认）：鼓励器「今日已赚」的**展示**小数位。
+// 没有辅币单位的货币（JPY / KRW，ExponentForCode==0）显示 2 位，其余显示 3 位。
+// 注意：这只是展示精度，结算与存储仍按 ExponentForCode（JPY/KRW 0 位，其余 2 位）。
+inline int DisplayDecimalsForCode(const std::string& code) {
+  return ExponentForCode(code) > 0 ? 3 : 2;
+}
+
 inline const char* SymbolForCode(const std::string& code) {
   if (code == "CNY") return "CN¥";
   if (code == "TWD") return "NT$";

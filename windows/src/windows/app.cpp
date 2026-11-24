@@ -1751,7 +1751,7 @@ bool RefreshEncourager(bool force) {
   const std::string code = EffectiveCurrencyCode();
   const int exponent = niuma::encourager::ExponentForCode(code);
   const std::string symbol = niuma::encourager::SymbolForCode(code);
-  // 小数位按货币最小单位(exponent)：有分的 2 位、日元韩元 0 位；带千分位（与 mac 一致）。
+  // D28：展示小数位 日元/韩元 2 位、其余 3 位；千分位；四舍五入到末位（与 mac 一致）。
   const std::uint64_t kTickUnitsPerYuan = 100000ULL;
   std::uint64_t wageTick = gState.encouragerDailyWageMinor * kTickUnitsPerYuan;
   for (int e = 0; e < exponent; ++e) wageTick /= 10;
@@ -1759,7 +1759,7 @@ bool RefreshEncourager(bool force) {
   if (status.total_seconds > 0)
     earnedTick = wageTick * static_cast<std::uint64_t>(status.elapsed_seconds) /
                  static_cast<std::uint64_t>(status.total_seconds);
-  const int dec = exponent > 0 ? 5 : 0;  // 有分货币5位(滚动/精度)，日元韩元0位
+  const int dec = niuma::encourager::DisplayDecimalsForCode(code);  // D28
   std::uint64_t p10 = 1; for (int i = 0; i < dec; ++i) p10 *= 10ULL;
   const std::uint64_t scaled = (earnedTick * p10 + kTickUnitsPerYuan / 2) / kTickUnitsPerYuan;
   const std::uint64_t whole = dec > 0 ? scaled / p10 : scaled;
@@ -5668,6 +5668,7 @@ struct EncouragerCurrencyChoice {
 };
 constexpr EncouragerCurrencyChoice kEncouragerCurrencies[] = {
     {L"CNY", L"CN\u00a5 CNY"}, {L"TWD", L"NT$ TWD"}, {L"JPY", L"JP\u00a5 JPY"},
+    {L"KRW", L"\u20a9 KRW"}, {L"THB", L"\u0e3f THB"},
     {L"USD", L"US$ USD"}, {L"EUR", L"\u20ac EUR"}, {L"GBP", L"\u00a3 GBP"}};
 
 void PopulateEncouragerTimeCombos(HWND window, UINT dpi) {
@@ -5720,7 +5721,7 @@ INT_PTR CALLBACK EncouragerDialogProcedure(HWND window, UINT message, WPARAM wPa
       control(L"BUTTON", UiText(L"手动指定货币", L"Override currency"),
           BS_AUTOCHECKBOX | WS_TABSTOP, 20, 92, 180, 24, kEncouragerOverride);
       control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
-          210, 88, 170, 240, kEncouragerCurrencyCombo);
+          210, 88, 170, 300, kEncouragerCurrencyCombo);  // 8 项货币，下拉高度相应加大
       for (const auto& choice : kEncouragerCurrencies)
         SendDlgItemMessageW(window, kEncouragerCurrencyCombo, CB_ADDSTRING, 0,
                             reinterpret_cast<LPARAM>(choice.title));

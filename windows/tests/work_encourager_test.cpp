@@ -123,6 +123,10 @@ int main() {
   CHECK(std::string(SymbolForCode("XYZ")) == "");
 
   // --- 金额格式化 ---
+  // D28：展示小数位（日元/韩元 2 位，其余 3 位）。
+  CHECK(DisplayDecimalsForCode("JPY") == 2 && DisplayDecimalsForCode("KRW") == 2);
+  CHECK(DisplayDecimalsForCode("CNY") == 3 && DisplayDecimalsForCode("EUR") == 3 &&
+        DisplayDecimalsForCode("THB") == 3 && DisplayDecimalsForCode("GBP") == 3);
   CHECK(FormatAmountMinor(1234567, 2, "CN¥") == "CN¥12,345.67");
   CHECK(FormatAmountMinor(0, 2, "CN¥") == "CN¥0.00");
   CHECK(FormatAmountMinor(5, 2, "US$") == "US$0.05");
