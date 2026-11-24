@@ -191,6 +191,14 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
   return img;
 }
 
+@interface NMOdometerLayer ()
+- (void)startTimerIfNeeded;
+- (void)pauseOdometer;
+- (void)snapToCurrent;
+- (void)osSuspend:(NSNotification *)n;
+- (void)osResume:(NSNotification *)n;
+@end
+
 @implementation NMOdometerLayer {
   NSMutableArray<CALayer *> *_slotLayers;
   NSMutableArray<CALayer *> *_stripLayers;
@@ -200,7 +208,7 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
   CGImageRef _stripCG;
   CGFloat _cellW, _cellH, _lineH, _pad;
   NSInteger _builtIntDigits, _builtDec;
-  BOOL _running, _caMode;
+  BOOL _running, _caMode, _suspended;
   BOOL _cfgActive; double _cfgWageTick; int _cfgStart, _cfgTotal, _cfgDec; NSString *_cfgSymbol;
 }
 
@@ -211,11 +219,38 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
     self.masksToBounds = YES;
     _slotLayers = [NSMutableArray array]; _stripLayers = [NSMutableArray array];
     _curDigit = [NSMutableArray array]; _slotExp = [NSMutableArray array];
-    _builtIntDigits = -1; _builtDec = -1; _pad = 1.0;
+    _builtIntDigits = -1; _builtDec = -1; _pad = 1.0; _suspended = NO;
+    NSNotificationCenter *nc = [NSWorkspace sharedWorkspace].notificationCenter;
+    [nc addObserver:self selector:@selector(osSuspend:) name:NSWorkspaceWillSleepNotification object:nil];
+    [nc addObserver:self selector:@selector(osResume:) name:NSWorkspaceDidWakeNotification object:nil];
+    NSDistributedNotificationCenter *dnc = [NSDistributedNotificationCenter defaultCenter];
+    [dnc addObserver:self selector:@selector(osSuspend:) name:@"com.apple.screenIsLocked" object:nil];
+    [dnc addObserver:self selector:@selector(osResume:) name:@"com.apple.screenIsUnlocked" object:nil];
   }
   return self;
 }
-- (void)dealloc { [_timer invalidate]; if (_stripCG) CGImageRelease(_stripCG); }
+- (void)dealloc {
+  [_timer invalidate];
+  [[NSWorkspace sharedWorkspace].notificationCenter removeObserver:self];
+  [[NSDistributedNotificationCenter defaultCenter] removeObserver:self];
+  if (_stripCG) CGImageRelease(_stripCG);
+}
+- (void)osSuspend:(NSNotification *)n { (void)n; _suspended = YES; [self pauseOdometer]; }
+- (void)osResume:(NSNotification *)n { (void)n; _suspended = NO; [self startTimerIfNeeded]; }
+- (void)pauseOdometer { [self.timer invalidate]; self.timer = nil; _running = NO; }
+- (void)startTimerIfNeeded {
+  if (_running || !self.active || self.hidden || _suspended || [self reduceMotion]) return;
+  _caMode = YES;
+  if (_slotLayers.count == 0) { [self buildStripImageIfNeeded]; [self rebuild]; }
+  [self snapToCurrent];
+  _running = YES;
+  self.timer = [NSTimer timerWithTimeInterval:0.2 target:self selector:@selector(tick:) userInfo:nil repeats:YES];
+  self.timer.tolerance = 0.05;
+  [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
+  [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSModalPanelRunLoopMode];
+  [self tick:nil];
+}
+- (void)setHidden:(BOOL)hidden { [super setHidden:hidden]; if (hidden) [self pauseOdometer]; else [self startTimerIfNeeded]; }
 - (BOOL)reduceMotion { if (@available(macOS 10.12, *)) return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion; return NO; }
 - (void)stop { [self.timer invalidate]; self.timer = nil; _running = NO; }
 
@@ -352,6 +387,9 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
 - (void)tick:(NSTimer *)timer {
   (void)timer;
   if (!_caMode) return;
+  if (self.totalSeconds > 0 && [self currentTickValue] >= (self.wageTick - 0.5)) {
+    [self snapToCurrent]; [self pauseOdometer]; return;
+  }
   unsigned long long S = [self currentS];
   unsigned long long intPart = S; const int dec = self.decimals < 0 ? 0 : self.decimals;
   for (int i = 0; i < dec; ++i) intPart /= 10ULL;
@@ -404,12 +442,7 @@ static CGImageRef NMOdoCreateImage(CGFloat w, CGFloat h, CGFloat scale, void (^d
   [self buildStripImageIfNeeded];
   [self rebuild];
   if (_staticLayer) _staticLayer.hidden = NO;
-  _running = YES;
-  self.timer = [NSTimer timerWithTimeInterval:0.2 target:self selector:@selector(tick:) userInfo:nil repeats:YES];
-  self.timer.tolerance = 0.05;
-  [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
-  [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSModalPanelRunLoopMode];
-  [self tick:nil];
+  [self startTimerIfNeeded];
 }
 - (void)drawInContext:(CGContextRef)ctx {
   if (_caMode) return;
