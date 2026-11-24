@@ -93,6 +93,15 @@ int main() {
   CHECK(FormatTickAmount(12000000, "CN¥") == "CN¥120.00000");
   CHECK(FormatTickAmount(0, "JP¥") == "JP¥0.00000");
   CHECK(FormatTickAmount(123456789, "JP¥") == "JP¥1,234.56789");
+  // D28：展示小数位（日元/韩元 2 位，其余 3 位）与四舍五入格式化。
+  CHECK(DisplayDecimalsForCode("JPY") == 2 && DisplayDecimalsForCode("KRW") == 2);
+  CHECK(DisplayDecimalsForCode("CNY") == 3 && DisplayDecimalsForCode("EUR") == 3 &&
+        DisplayDecimalsForCode("THB") == 3 && DisplayDecimalsForCode("GBP") == 3);
+  CHECK(FormatTickAmountDecimals(123456789, "JP¥", 2) == "JP¥1,234.57");
+  CHECK(FormatTickAmountDecimals(123456789, "CN¥", 3) == "CN¥1,234.568");
+  CHECK(FormatTickAmountDecimals(99999950, "€", 3) == "€1,000.000");   // 999.9995 → 进位
+  CHECK(FormatTickAmountDecimals(0, "₩", 2) == "₩0.00");
+  CHECK(FormatTickAmountDecimals(12000000, "CN¥", 3) == "CN¥120.000");
   // WageMinorToTick：日薪换算到「元 × 1e5」刻度。
   // CNY 200.00 元 = 20000 分 -> 200.00 元 -> 20000000 tick。
   CHECK(WageMinorToTick(20000, 2) == 20000000ULL);

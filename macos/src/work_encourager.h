@@ -121,6 +121,13 @@ inline int ExponentForCode(const std::string& code) {
   return 2;
 }
 
+// D28（2026-11-25 用户确认）：鼓励器「今日已赚」的**展示**小数位。
+// 没有辅币单位的货币（JPY / KRW，ExponentForCode==0）显示 2 位，其余显示 3 位。
+// 注意：这只是展示精度，结算与存储仍按 ExponentForCode（JPY/KRW 0 位，其余 2 位）。
+inline int DisplayDecimalsForCode(const std::string& code) {
+  return ExponentForCode(code) > 0 ? 3 : 2;
+}
+
 inline const char* SymbolForCode(const std::string& code) {
   if (code == "CNY") return "CN¥";
   if (code == "TWD") return "NT$";
@@ -241,6 +248,38 @@ inline std::string FormatTickAmount(std::uint64_t tick, const std::string& symbo
   out += grouped;
   out.push_back('.');
   out += fracStr;
+  return out;
+}
+
+// D28：把「元 × 1e5」刻度按 decimals 位（0–5）四舍五入（half-up）后格式化为
+// 「符号 + 千分位整数 [+ '.' + decimals 位小数]」。例：tick 123456789、3 位 → "JP¥1,234.568"。
+inline std::string FormatTickAmountDecimals(std::uint64_t tick, const std::string& symbol,
+                                            int decimals) {
+  if (decimals < 0) decimals = 0;
+  if (decimals > 5) decimals = 5;
+  std::uint64_t div = 1;
+  for (int i = decimals; i < 5; ++i) div *= 10;
+  const std::uint64_t scaled = (tick + div / 2) / div;
+  std::uint64_t p10 = 1;
+  for (int i = 0; i < decimals; ++i) p10 *= 10;
+  const std::uint64_t whole = scaled / p10;
+  const std::uint64_t frac = scaled % p10;
+  std::string digits = std::to_string(whole);
+  std::string grouped;
+  int count = 0;
+  for (int i = static_cast<int>(digits.size()) - 1; i >= 0; --i) {
+    grouped.push_back(digits[static_cast<std::size_t>(i)]);
+    if (++count % 3 == 0 && i > 0) grouped.push_back(',');
+  }
+  std::reverse(grouped.begin(), grouped.end());
+  std::string out = symbol;
+  out += grouped;
+  if (decimals > 0) {
+    std::string fracStr = std::to_string(frac);
+    while (static_cast<int>(fracStr.size()) < decimals) fracStr.insert(fracStr.begin(), '0');
+    out.push_back('.');
+    out += fracStr;
+  }
   return out;
 }
 

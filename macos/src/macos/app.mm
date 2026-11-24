@@ -1458,13 +1458,15 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   NSString *code = self.encouragerCurrency.length ? self.encouragerCurrency : @"CNY";
   const int exponent = niuma::encourager::ExponentForCode(std::string(code.UTF8String ?: "CNY"));
   const std::string symbol = niuma::encourager::SymbolForCode(std::string(code.UTF8String ?: "CNY"));
+  const int displayDecimals =
+      niuma::encourager::DisplayDecimalsForCode(std::string(code.UTF8String ?: "CNY"));  // D28
   const std::uint64_t wageTick =
       niuma::encourager::WageMinorToTick(self.encouragerDailyWageMinor, exponent);
   NSString *earnedValue = nil;
   if (wageValid) {
     const std::uint64_t earnedTick = niuma::encourager::EarnedTick(wageTick, window, secondOfDay);
     earnedValue = [NSString stringWithUTF8String:
-        niuma::encourager::FormatTickAmount(earnedTick, symbol).c_str()];
+        niuma::encourager::FormatTickAmountDecimals(earnedTick, symbol, displayDecimals).c_str()];
   }
   NSInteger mode = self.progressShowMode;
   // 未填日薪 → 只能倒计时；选「今日已赚」但无日薪 → 自动回落倒计时。
@@ -1476,7 +1478,7 @@ static CGEventRef EventTapCallback(CGEventTapProxy, CGEventType, CGEventRef, voi
   self.progressStartSecond = window.Valid() ? window.StartSecond() : 0;
   self.progressTotalSeconds = window.TotalSeconds();
   self.progressSymbol = [NSString stringWithUTF8String:symbol.c_str()];
-  self.progressDecimals = (exponent > 0 ? 5 : 0);  // 有分货币5位(快速滚动)，日元韩元0位
+  self.progressDecimals = displayDecimals;  // D28：日元/韩元 2 位，其余 3 位
   if (mode == kProgressModeEarned) {
     self.progressMainText = earnedValue;
     // 下班后即便只显示今日已赚，也补一句「已加班 X」。
@@ -1816,14 +1818,15 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   NSString *code = self.encouragerCurrency.length ? self.encouragerCurrency : @"CNY";
   int exponent = niuma::encourager::ExponentForCode(std::string(code.UTF8String ?: "CNY"));
   std::string symbol = niuma::encourager::SymbolForCode(std::string(code.UTF8String ?: "CNY"));
-  // FB2（主控修正版）：金额一律以「元」为单位、保留 5 位小数（¥0.00002 / NT$0.00003 /
-  // $0.00004；JPY 也保留 5 位，仅展示、不影响结算）。换算到 1e-5 元刻度求值，末位每秒跳动。
+  // D28：展示小数位为日元/韩元 2 位、其余 3 位（仅展示，不影响结算）。仍在 1e-5 元刻度上求值。
   const std::uint64_t wageTick =
       niuma::encourager::WageMinorToTick(self.encouragerDailyWageMinor, exponent);
   const std::uint64_t earnedTick =
       niuma::encourager::EarnedTick(wageTick, window, secondOfDay);
   self.encouragerDisplayAmount = [NSString stringWithUTF8String:
-      niuma::encourager::FormatTickAmount(earnedTick, symbol).c_str()];
+      niuma::encourager::FormatTickAmountDecimals(
+          earnedTick, symbol,
+          niuma::encourager::DisplayDecimalsForCode(std::string(code.UTF8String ?: "CNY"))).c_str()];
   // 分享卡仍按契约 §9 的 amount_display（exponent 位小数）写，不受 5 位展示影响。
   self.encouragerShareAmount = [NSString stringWithUTF8String:
       niuma::encourager::FormatAmountMinor(status.earned_minor, exponent, symbol).c_str()];
@@ -1900,9 +1903,10 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
     [content addSubview:self.encouragerCurrencyOverrideControl];
     self.encouragerCurrencyControl = [[NSPopUpButton alloc] initWithFrame:
         NSMakeRect(210, 268, 150, 28) pullsDown:NO];
-    NSArray<NSString *> *codes = @[ @"CNY", @"TWD", @"JPY", @"USD", @"EUR", @"GBP" ];
-    NSArray<NSString *> *titles = @[ @"CN¥ CNY", @"NT$ TWD", @"JP¥ JPY", @"US$ USD",
-                                     @"€ EUR", @"£ GBP" ];
+    NSArray<NSString *> *codes = @[ @"CNY", @"TWD", @"JPY", @"KRW", @"THB",
+                                    @"USD", @"EUR", @"GBP" ];
+    NSArray<NSString *> *titles = @[ @"CN¥ CNY", @"NT$ TWD", @"JP¥ JPY", @"₩ KRW", @"฿ THB",
+                                     @"US$ USD", @"€ EUR", @"£ GBP" ];
     for (NSUInteger i = 0; i < codes.count; ++i) {
       [self.encouragerCurrencyControl addItemWithTitle:titles[i]];
       self.encouragerCurrencyControl.lastItem.representedObject = codes[i];
@@ -2037,6 +2041,7 @@ static BOOL NMParseAmountToMinor(NSString *text, int exponent, unsigned long lon
   }
   const std::uint64_t wageTick = niuma::encourager::WageMinorToTick(wageMinor, exponent);
   const std::uint64_t perSecTick = niuma::encourager::PerSecondTick(wageTick, window);
+  // 每秒金额提示保留 5 位：日薪较低时 3 位会显示成 0.000（D28 只针对浮窗「今日已赚」）。
   NSString *amount = [NSString stringWithUTF8String:
       niuma::encourager::FormatTickAmount(perSecTick, symbol).c_str()];
   const int totalSeconds = window.TotalSeconds();
