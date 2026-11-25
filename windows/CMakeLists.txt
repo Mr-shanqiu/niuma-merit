@@ -71,3 +71,9 @@ foreach(target IN ITEMS niuma-input-core niuma-runtime-core niuma-alpha-region
   target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
   set_property(TARGET ${target} PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endforeach()
+
+# 纯算法单测（CI 用）：不进默认 all；CI 显式 --target work_encourager_test 构建并运行。
+add_executable(work_encourager_test EXCLUDE_FROM_ALL tests/work_encourager_test.cpp)
+target_include_directories(work_encourager_test PRIVATE src/client/core)
+target_compile_features(work_encourager_test PRIVATE cxx_std_17)
+target_compile_options(work_encourager_test PRIVATE /utf-8 /EHsc)

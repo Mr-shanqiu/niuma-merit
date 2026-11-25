@@ -35,6 +35,11 @@ jobs:
         run: cmake -S windows -B windows/build -A x64
       - name: Build
         run: cmake --build windows/build --config Release --target niuma-merit
+      - name: Build unit test
+        run: cmake --build windows/build --config Release --target work_encourager_test
+      - name: Run unit test
+        shell: pwsh
+        run: windows/build/Release/work_encourager_test.exe
       - name: Record checksum
         shell: pwsh
         run: (Get-FileHash windows/build/Release/niuma-merit.exe -Algorithm SHA256).Hash | Tee-Object windows-sha256.txt
